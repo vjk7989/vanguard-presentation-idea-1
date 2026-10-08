@@ -12,8 +12,9 @@ Verified on 2026-10-09 for the three-view role workspaces and cross-profile join
 | Production compilation | Pass — `pnpm build` without database credentials |
 | Graft drift | Pass — `pnpm exec graft build` then `pnpm graft:check` |
 | Supabase migration | Pass — `003_demo_queue.sql` applied to the dedicated `reserve-operations-lab` project; current `DEMO01` run has nine items, six pending, and RLS enabled |
-| Canonical Vercel smoke test | Deployment of the canonical QR correction pending; the previous live commit passed admin/participant session and presence checks but exposed a stale QR alias |
+| Canonical Vercel smoke test | Pass — commit `385298c` deployed successfully; homepage, new Work route, and room preview returned 200; a live Chrome admin profile showed the canonical QR, a separate Chrome context joined, and its second tab reused the session. The test participant was kicked afterward. |
 | Full deployed four-device run | Pending — not exercised on the shared public room, to avoid changing its financial run during verification |
+| Physical Chrome device | Unverified — no phone or external Chrome device was connected to this workspace |
 
 Screenshots for all nine role/view combinations at 360px and 1366px, plus the admin QR and legacy surfaces, live in `docs/screenshots/`. Browser tests used the installed Chrome channel against a local production server. The full run used `PLAYWRIGHT_TRACE=off` because Chrome trace archiving exhausted the remaining project disk; default test runs still retain failure traces. The disposable PostgreSQL server was stopped after integration tests. Its ignored generated files remain under `.tmp/pg-integration-20261009` because the environment did not permit recursive removal; they are not committed.
 
