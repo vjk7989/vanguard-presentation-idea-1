@@ -1,0 +1,14 @@
+{
+  "mcp": {
+    "graft": {
+      "type": "local",
+      "command": [
+        "pnpm",
+        "exec",
+        "graft",
+        "mcp"
+      ],
+      "enabled": true
+    }
+  }
+}
