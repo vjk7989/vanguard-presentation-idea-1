@@ -12,7 +12,7 @@ Verified on 2026-10-09 for the deck-aligned Friday run and repeatable practice c
 | Production compilation | Pass — `pnpm build`, including page generation with two workers. |
 | Graft drift | Pass — `pnpm exec graft build` and `pnpm graft:check`. |
 | Supabase migration | Pass — `004_pitch_cases.sql` applied to the dedicated `reserve-operations-lab` project. Existing run remains version one; new runs select version two. |
-| Canonical Vercel smoke test | Pending deployment of this change. |
+| Canonical Vercel smoke test | Pass — `f12de71` deployed. The new case route is present; a separate HTTP session joined, appeared as waiting, received a compact unchanged poll with no event history, was kicked, and then received 401. Real Chrome in two separate profiles opened the admin dashboard/QR and joined the role picker. A clean version-two `DEMO01` run was started (run 3, step 0, no cases/events). Run 1 remains version one and replayable. |
 | Physical Chrome device | Unverified — no external phone was connected to this workspace. |
 
 Updated screenshots are in `docs/screenshots/`. The final browser pass used `PLAYWRIGHT_TRACE=off` because the C: drive has less than 250 MiB free. The public Supabase room was not used as a disposable integration database. The Supabase security advisor's [RLS-enabled/no-policy notice](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) is intentional for server-only tables; browser clients never query the Supabase Data API. The new case index is currently an informational [unused-index notice](https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index) because the table is new.
