@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 import { assertOrigin } from "../../src/lib/security";
+import { joinUrlForRoom } from "../../src/lib/demo";
 
 const originalOrigin = process.env.APP_ORIGIN;
 afterEach(() => { process.env.APP_ORIGIN = originalOrigin; });
@@ -22,5 +23,12 @@ describe("mutation origin checks", () => {
       method: "POST", headers: { origin: "https://untrusted.example" },
     });
     expect(() => assertOrigin(request)).toThrow("unapproved origin");
+  });
+});
+
+describe("demo invitation URL", () => {
+  it("pins DEMO01 to the canonical deployment despite a stale configured origin", () => {
+    expect(joinUrlForRoom("DEMO01", "https://vanguard-presentation-idea-1-ze6x.vercel.app"))
+      .toBe("https://vanguard-presentation-idea-1.vercel.app/join/DEMO01");
   });
 });
