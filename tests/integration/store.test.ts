@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -15,8 +15,9 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     process.env.SESSION_SECRET = "test-session-secret-0123456789-abcdef";
     dbModule = await import("../../src/lib/db");
     store = await import("../../src/lib/store");
-    const migration = readFileSync(resolve("db/001_initial.sql"), "utf8");
-    await dbModule.db().unsafe(migration);
+    for (const file of readdirSync(resolve("db")).filter(name => /^\d+_.*\.sql$/.test(name)).sort()) {
+      await dbModule.db().unsafe(readFileSync(resolve("db", file), "utf8"));
+    }
   });
   afterAll(async () => {
     if (!dbModule) return;
@@ -39,6 +40,59 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     expect(count[0].count).toBe(1);
   });
 
+  it("counts waiting devices and supports self-switch and admin kick", async () => {
+    const admin = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(admin, randomUUID());
+    createdCodes.push(created.code);
+    const a = `participant-${randomUUID()}`;
+    const b = `participant-${randomUUID()}`;
+    await store.joinRoom(created.code, a, created.runId);
+    await store.joinRoom(created.code, b, created.runId);
+    let state = await store.getSnapshot(created.code, admin);
+    expect(state.presence.waiting).toBe(2);
+    expect(state.presence.devices).toHaveLength(2);
+    await store.claimRole(created.code, a, randomUUID(), created.runId, "issuer");
+    await store.leaveRole(created.code, a, randomUUID(), created.runId);
+    await store.claimRole(created.code, a, randomUUID(), created.runId, "fund");
+    state = await store.getSnapshot(created.code, admin);
+    expect(state.roles.find(role => role.role === "issuer")?.claimed).toBe(false);
+    expect(state.roles.find(role => role.role === "fund")?.claimed).toBe(true);
+    const waitingId = state.presence.devices.find(device => device.role === null)?.id;
+    expect(waitingId).toBeTruthy();
+    await store.kickDevice(created.code, admin, randomUUID(), created.runId, waitingId!);
+    await expect(store.getSnapshot(created.code, b)).rejects.toThrow("Join this room");
+  });
+
+  it("persists fictional approvals without touching financial balances and resets them per run", async () => {
+    const admin = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(admin, randomUUID());
+    createdCodes.push(created.code);
+    const treasury = `participant-${randomUUID()}`;
+    await store.joinRoom(created.code, treasury, created.runId);
+    await store.claimRole(created.code, treasury, randomUUID(), created.runId, "issuer");
+    await store.controlRoom(created.code, admin, randomUUID(), created.runId, "start");
+    const before = await store.getSnapshot(created.code, admin);
+    const requestId = randomUUID();
+    const [first, retry] = await Promise.all([
+      store.completeMockItem(created.code, treasury, requestId, created.runId, "iss-pay-01"),
+      store.completeMockItem(created.code, treasury, requestId, created.runId, "iss-pay-01"),
+    ]);
+    expect(retry).toEqual(first);
+    const after = await store.getSnapshot(created.code, admin);
+    expect(after.state.balances).toEqual(before.state.balances);
+    expect(after.mockItems.find(item => item.key === "iss-pay-01")?.status).toBe("complete");
+    expect(after.events.filter(event => event.type === "mock_item_completed")).toHaveLength(1);
+    expect((after.events.at(-1)?.stateAfter as { demoQueue: Record<string, string> }).demoQueue["iss-pay-01"]).toBe("complete");
+    await expect(store.completeMockItem(created.code, treasury, randomUUID(), created.runId, "iss-pay-01")).rejects.toThrow("already complete");
+    const reset = await store.controlRoom(created.code, admin, randomUUID(), created.runId, "reset");
+    const fresh = await store.getSnapshot(created.code, admin);
+    expect(fresh.runId).toBe(reset.runId);
+    expect(fresh.mockItems.find(item => item.key === "iss-pay-01")?.status).toBe("pending");
+    const prior = await store.getRunReplay(created.code, admin, created.runId);
+    expect(prior.mockItems.find(item => item.key === "iss-pay-01")?.status).toBe("complete");
+    await expect(store.completeMockItem(created.code, treasury, randomUUID(), created.runId, "iss-pay-02")).rejects.toThrow("earlier run");
+  });
+
   it("keeps one public demo room and lets a kicked participant join again", async () => {
     const presenter = `presenter-${randomUUID()}`;
     const preview = await store.roomPreview("DEMO01");
@@ -49,6 +103,9 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     expect((await store.openDemoPresenter(presenter, openId)).code).toBe(opened.code);
     const otherPresenter = await store.openDemoPresenter(`presenter-${randomUUID()}`, randomUUID());
     expect(otherPresenter).toEqual(opened);
+    const adminCount = (await store.getSnapshot(opened.code, presenter)).presence.admins;
+    await store.openDemoPresenter(presenter, randomUUID());
+    expect((await store.getSnapshot(opened.code, presenter)).presence.admins).toBe(adminCount);
     const first = `participant-${randomUUID()}`;
     await store.joinRoom(opened.code, first, opened.runId);
     await store.claimRole(opened.code, first, randomUUID(), opened.runId, "issuer");

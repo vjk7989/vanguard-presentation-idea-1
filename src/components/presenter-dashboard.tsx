@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import * as Switch from "@radix-ui/react-switch";
-import { ArrowRight, Copy, ExternalLink, Pause, Play, RotateCcw, Wifi, WifiOff } from "lucide-react";
+import { ArrowRight, Copy, ExternalLink, Pause, Play, QrCode, RotateCcw, Wifi, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Architecture } from "@/components/architecture";
@@ -19,25 +19,42 @@ export function PresenterDashboard({ code }: { code: string }) {
   const { snapshot: s, connected, busy, error, animatedEvent, post } = room;
   const [selected, setSelected] = useState<WireEvent | null>(null);
   const [joinUrl, setJoinUrl] = useState("");
+  const [showQr, setShowQr] = useState(false);
+  const [notice, setNotice] = useState("");
   useEffect(() => { queueMicrotask(() => setJoinUrl(`${location.origin}/join/${code}`)); }, [code]);
   async function control(name: string, extra: object = {}) { try { await post("controls", { control: name, ...extra }); } catch {} }
   async function takeover() {
     if (!s?.next) return;
     try { await post("actions", { action: s.next.type, onBehalfOf: s.next.role }); } catch {}
   }
-  async function kick(role: Role) { try { await post("roles/release", { role }); } catch {} }
+  async function kick(sessionId: string) {
+    try { await post("sessions/kick", { sessionId }); setNotice("Device removed. It can rejoin from the same QR link."); } catch {}
+  }
+  async function copyJoin() {
+    try { await navigator.clipboard.writeText(joinUrl); setNotice("Join link copied."); }
+    catch { setNotice("Could not copy the link. Open it from the QR panel instead."); }
+  }
 
   if (!s) return <Shell><div className="mx-auto max-w-6xl p-8"><div className="h-12 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}</div></Shell>;
   const actionsDisabled = !connected || busy;
-  const join = <div className="flex flex-col items-center gap-4 rounded-xl border border-border bg-card p-5 text-center">
-    {joinUrl && <QRCodeSVG value={joinUrl} size={164} marginSize={2} bgColor="transparent" fgColor="currentColor" aria-label="QR code to join this room" />}
-    <div><div className="text-sm text-muted-foreground">Room code</div><div className="font-mono text-3xl font-semibold tracking-wider">{s.code}</div></div>
-    <button onClick={() => navigator.clipboard.writeText(joinUrl)} className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-primary"><Copy size={16} /> Copy join link</button>
+  const join = <div className="rounded-xl border border-border bg-card p-5">
+    <div className="flex items-start justify-between gap-3"><div><h2 className="font-semibold">Invite role devices</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">Show the QR when your participants are ready.</p></div><QrCode size={22} className="text-primary" /></div>
+    <Button className="mt-5 w-full" variant={showQr ? "secondary" : "primary"} onClick={() => setShowQr(value => !value)} aria-expanded={showQr} aria-controls="join-qr">{showQr ? "Hide QR" : "Show QR"}</Button>
+    {showQr && <div id="join-qr" className="mt-5 flex flex-col items-center gap-3 border-t border-border pt-5 text-center">
+      {joinUrl && <div className="rounded-lg bg-white p-3 text-black"><QRCodeSVG value={joinUrl} size={176} marginSize={2} bgColor="#ffffff" fgColor="#111111" aria-label="QR code to join this room" /></div>}
+      <p className="font-mono text-sm">ROOM {s.code}</p>
+      <p className="max-w-full break-all text-xs text-muted-foreground">{joinUrl}</p>
+      <button onClick={copyJoin} className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-primary"><Copy size={16} /> Copy join link</button>
+    </div>}
   </div>;
   const roles = <div className="space-y-2">{s.roles.map(item => <div key={item.role} className="flex min-h-12 items-center justify-between gap-3 border-b border-border py-2 text-sm">
     <div><span className="font-semibold">{names[item.role]}</span><span className="ml-2 text-muted-foreground">{item.claimed ? item.connected ? "Connected" : "Disconnected" : "Available"}</span></div>
-    {item.claimed && <Button size="sm" variant="ghost" onClick={() => kick(item.role)} disabled={actionsDisabled} aria-label={`Kick ${names[item.role]}`}>Kick</Button>}
   </div>)}</div>;
+  const presence = <section className="rounded-xl border border-border bg-card p-5" aria-label="Connected devices">
+    <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Devices in the room</h2><p className="mt-1 text-sm text-muted-foreground">Live presence updates every two seconds.</p></div><div className="font-mono text-2xl font-semibold">{s.presence.online} <span className="text-sm font-normal text-muted-foreground">online</span></div></div>
+    <p className="mt-4 text-sm text-muted-foreground">{s.presence.admins} admin · {s.presence.waiting} choosing a role · {s.presence.assigned} in roles</p>
+    <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-h-14 items-center justify-between gap-3 border-b border-border py-2 text-sm"><div><span className="font-mono font-semibold">{device.label}</span><span className="ml-2 text-muted-foreground">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button size="sm" variant="ghost" disabled={actionsDisabled} onClick={() => kick(device.id)} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
+  </section>;
   return <Shell>
     <header className="border-b border-border"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8">
       <div className="flex items-center gap-5"><div className="text-sm font-bold tracking-tight">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><span className="hidden font-mono text-sm text-muted-foreground sm:inline">{s.code}</span></div>
@@ -54,11 +71,12 @@ export function PresenterDashboard({ code }: { code: string }) {
           </>}
         </div>
       </div>
-      {error && <p role="alert" className="mb-4 rounded-md border border-destructive p-3 text-sm text-destructive">{error} Actions are disabled until the connection returns.</p>}
+      {error && <p role="alert" className="mb-4 rounded-md border border-destructive p-3 text-sm text-destructive">{error}{!connected && " Actions are disabled until the connection returns."}</p>}
+      {notice && <p role="status" className="mb-4 rounded-md bg-secondary p-3 text-sm">{notice}</p>}
       {s.status === "lobby" ? <div className="grid gap-8 lg:grid-cols-[320px_1fr]">
-        {join}<section><h2 className="mb-3 text-lg font-semibold">Role positions</h2>{roles}<p className="mt-5 max-w-xl text-sm leading-6 text-muted-foreground">Each participant chooses one role. You can start with an empty position and perform its action from this laptop.</p><div className="mt-7 border-t border-border pt-5"><h3 className="font-semibold">Presenter guide</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Ask who owns each confirmation. After fund processing, point out that $200m is pending and bank cash remains $300m. Switch views without changing the financial state.</p></div></section>
+        {join}<div className="space-y-5">{presence}<section><h2 className="mb-3 text-lg font-semibold">Role positions</h2>{roles}<p className="mt-5 max-w-xl text-sm leading-6 text-muted-foreground">Each participant chooses one role. You can start with an empty position and perform its action from this laptop.</p><div className="mt-7 border-t border-border pt-5"><h3 className="font-semibold">Presenter guide</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Ask who owns each confirmation. After fund processing, point out that $200m is pending and bank cash remains $300m. Switch views without changing the financial state.</p></div></section></div>
       </div> : <>
-        <div className="mb-6 grid gap-5 md:grid-cols-[260px_1fr]">{join}<div><h2 className="text-lg font-semibold">Participants</h2>{roles}<p className="mt-3 text-sm text-muted-foreground">Kicked participants can scan the QR code or tap Rejoin on their device.</p></div></div>
+        <div className="mb-6 grid gap-5 md:grid-cols-[280px_1fr]">{join}<div className="space-y-5">{presence}<div><h2 className="text-lg font-semibold">Role positions</h2>{roles}<p className="mt-3 text-sm text-muted-foreground">Kicked participants can scan the QR code or tap Rejoin on their device.</p></div></div></div>
         <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border-y border-border py-3">
           <div className="flex items-center gap-3 text-sm font-semibold"><span className={s.mode === "conventional" ? "text-foreground" : "text-muted-foreground"}>Without blockchain</span><Switch.Root checked={s.mode === "ledger"} onCheckedChange={checked => control("set_mode", { mode: checked ? "ledger" : "conventional" })} disabled={actionsDisabled} aria-label="Show shared workflow ledger" className="relative h-7 w-12 rounded-full bg-secondary data-[state=checked]:bg-primary"><Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" /></Switch.Root><span className={s.mode === "ledger" ? "text-foreground" : "text-muted-foreground"}>With blockchain</span></div>
           <p className="text-xs text-muted-foreground">Same transaction and controls. Different record-sharing design.</p>

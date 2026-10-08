@@ -11,13 +11,15 @@ Requirements: Node.js 22, pnpm 9, and a PostgreSQL database for live multi-devic
 1. Run `pnpm install` in this project. The project `.npmrc` keeps the pnpm store and npm cache here.
 2. Copy `.env.example` to `.env.local` and set `DATABASE_URL`, `SESSION_SECRET` (at least 32 characters), and `CRON_SECRET`. `APP_ORIGIN` is optional; same-origin browser requests work without it.
 3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The ordered, idempotent migrations are in `db/`. On Supabase, use a dedicated project; the initial migration enables RLS on every app table, with no browser-facing policies. The app uses server-side Postgres connections and does not need a Supabase API key.
-4. Run `pnpm dev`. Open `http://localhost:3000` from the presenter laptop. The first visitor initializes the shared room automatically.
+4. Run `pnpm dev`. Open `http://localhost:3000` from the admin laptop. Entering the admin dashboard initializes the shared room automatically.
 
 For phones on a local network, use an HTTPS tunnel or host with a reachable origin. The QR code uses the browser's current origin. The secure session cookie is enabled automatically in production.
 
-## Presenter flow
+## Live demo flow
 
-Choose **Open control room**. No presenter code is required; controls are public because this is a shared demo. Display the QR code or send `/join/DEMO01`. Participants claim one role each. The presenter can **Kick** a participant, invalidating that session and freeing its role. A kicked participant can press **Rejoin** or rescan the QR code and choose an available role. Start the scenario, then follow the current-step prompt. The presenter may act on behalf of any role. Switch comparison views at any time; the mode affects presentation only. After fund processing, the presenter may delay bank confirmation. After receipt, the presenter may repeat the bank notice. Restart creates a new run while retaining roles; prior runs remain available for replay. Participants may join even when a run is paused or ended, but transaction actions require an active run.
+Choose **Enter admin dashboard** on the public homepage, then **Show QR**. Revealing the QR does not create a room or reset the run; it always points to `/join/DEMO01`. A scan connects the device automatically and opens the live role picker. The admin sees online counts and a roster, including devices still choosing a role. The admin can **Kick** any participant device, invalidating its session; that person can press **Rejoin** or rescan. Participants can use **Change role** to release their position and choose another available role.
+
+Each participant gets a distinct treasury, fund, or bank workspace. Every fictional background queue item opens a detail view; pending items can be approved or confirmed, and the result is shared across devices. Those items do **not** change reserve balances. Only the highlighted Friday-scenario action advances the six-step financial run. Start the scenario, follow that prompt, and use presenter takeover if a role is unoccupied. Comparison mode affects presentation only. Delay and duplicate-bank exceptions remain available. Restart starts a fresh background queue and financial run while retaining roles; earlier runs remain available for event-by-event replay.
 
 See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthroughs.md).
 
@@ -25,10 +27,12 @@ See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthr
 
 - PostgreSQL `BIGINT` stores all money in minor units. API JSON exposes monetary values as decimal strings.
 - Each accepted workflow event receives an ordered index, previous hash, SHA-256 event hash, and state-after snapshot. These are simulated ledger references.
+- Background queue approvals are per-run database records. Their event snapshots include queue status for deterministic replay, while the financial state remains unchanged.
 - Mutations lock the room row, validate session and run, update state, append an event, save an idempotent response, and increment the revision in one database transaction.
 - Role claims have unique room/role and room/session constraints. Presenter controls and role actions are checked against the session on the server; anyone may obtain a presenter session from the public home page. Do not use this deployment for real data.
 - Sessions use opaque HTTP-only cookie tokens. Only HMAC-SHA-256 token hashes are stored in the database. Mutations validate the `Origin` header against the request origin (and optional `APP_ORIGIN`).
 - The shared `DEMO01` room persists; older legacy rooms expire after 24 hours. A Hobby-compatible daily Vercel Cron job deletes expired legacy rooms at its next run (scheduled for 02:00 UTC, with Hobby's within-the-hour timing).
+- Presence counts sessions seen within 15 seconds and refreshes visible screens every two seconds. The daily cleanup also removes inactive demo sessions older than 24 hours.
 
 ## Tests
 

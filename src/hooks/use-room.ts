@@ -42,7 +42,7 @@ export function useRoom(code: string) {
 
   useEffect(() => {
     queueMicrotask(() => { void refresh(); });
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 1000);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 2000);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);

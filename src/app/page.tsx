@@ -1,20 +1,15 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { QRCodeSVG } from "qrcode.react";
-import { ArrowRight, QrCode } from "lucide-react";
+import { ArrowRight, MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 import { Disclaimer, ThemeToggle } from "@/components/common";
-import { DEMO_ROOM_CODE } from "@/lib/demo";
 
 export default function Home() {
   const router = useRouter();
-  const [joinUrl, setJoinUrl] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { queueMicrotask(() => setJoinUrl(`${location.origin}/join/${DEMO_ROOM_CODE}`)); }, []);
 
   async function openControls() {
     setWorking(true); setError("");
@@ -34,7 +29,7 @@ export default function Home() {
       <section className="max-w-2xl">
         <p className="mb-5 text-sm font-semibold text-primary">Friday customer redemptions</p>
         <h1 className="max-w-xl text-balance text-4xl font-bold leading-tight tracking-tight sm:text-5xl">Follow the cash. See who confirms each step.</h1>
-        <p className="mt-6 max-w-xl text-lg leading-8 text-muted-foreground">One shared demonstration of an issuer, a fund operator, and a bank handling a $450m customer payout. Scan the QR code to join from a phone, or open the public control room.</p>
+        <p className="mt-6 max-w-xl text-lg leading-8 text-muted-foreground">One shared demonstration of an issuer, a fund operator, and a bank handling a $450m customer payout. Open the admin dashboard, show its QR code, and invite the three role devices.</p>
         <div className="mt-10 border-t border-border pt-6">
           <h2 className="text-base font-semibold">What the demonstration shows</h2>
           <ol className="mt-4 space-y-3 text-base text-muted-foreground">
@@ -44,16 +39,12 @@ export default function Home() {
           </ol>
         </div>
       </section>
-      <section className="self-start rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8" aria-label="Demo access">
-        <div className="mb-7 flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-primary"><QrCode size={22} /></div>
-        <h2 className="text-2xl font-semibold">Join the shared demo</h2>
-        <p className="mt-2 text-muted-foreground">This room stays available. Scan the QR code or open the join link on your device.</p>
-        <div className="mt-7 flex justify-center rounded-lg border border-border bg-background p-4">{joinUrl && <QRCodeSVG value={joinUrl} size={180} marginSize={2} bgColor="transparent" fgColor="currentColor" aria-label="QR code to join the shared demo" />}</div>
-        <p className="mt-3 text-center font-mono text-sm text-muted-foreground">ROOM {DEMO_ROOM_CODE}</p>
-        <Button asChild className="mt-6 w-full"><Link href={`/join/${DEMO_ROOM_CODE}`}>Join demo <ArrowRight size={17} /></Link></Button>
-        <div className="my-6 h-px bg-border" />
-        <p className="mb-3 text-sm text-muted-foreground">Anyone can open the presenter view for this public demo.</p>
-        <Button className="w-full" variant="secondary" onClick={openControls} disabled={working}>{working ? "Opening…" : "Open control room"}<ArrowRight size={17} /></Button>
+      <section className="self-start rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8" aria-label="Admin access">
+        <div className="mb-7 flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-primary"><MonitorPlay size={22} /></div>
+        <h2 className="text-2xl font-semibold">Run the live demo</h2>
+        <p className="mt-3 leading-7 text-muted-foreground">Enter the admin dashboard to reveal the QR invite, see connected devices, and guide the scenario. The shared room stays available between visits.</p>
+        <div className="mt-7 rounded-lg bg-secondary p-4 text-sm leading-6"><span className="font-semibold">Public demo access.</span> Anyone using this website can open the admin controls. All data and transactions are fictional.</div>
+        <Button className="mt-7 w-full" onClick={openControls} disabled={working}>{working ? "Opening…" : "Enter admin dashboard"}<ArrowRight size={17} /></Button>
         {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
       </section>
     </main>

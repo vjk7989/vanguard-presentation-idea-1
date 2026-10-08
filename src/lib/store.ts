@@ -11,6 +11,7 @@ import {
 import { tokenHash } from "./security";
 import { hashEvent } from "./ledger";
 import { DEMO_ROOM_CODE } from "./demo";
+import { fixtureByKey, MOCK_FIXTURES, MOCK_INITIAL_STATUS, type MockItem, type MockStatus } from "./mock-queue";
 
 type Query = postgres.Sql | postgres.TransactionSql;
 type Param = string | number | boolean | null;
@@ -23,6 +24,8 @@ type SessionRow = { id: string; kind: "presenter" | "participant"; role: Role | 
 type BalanceRow = { cash_minor: string; fund_minor: string; pending_minor: string; obligations_minor: string };
 type EventRow = { id: string; event_index: number; type: string; actor: string; on_behalf_of: Role | null; label: string; amount_minor: string | null; reference: string | null; previous_hash: string; event_hash: string; state_after: unknown; created_at: string };
 type RequestRow = { response_json: unknown };
+type QueueRow = { item_key: string; role: Role; status: MockStatus };
+type PresenceRow = { id: string; kind: "presenter" | "participant"; role: Role | null; last_seen_at: string };
 
 function jsonObject<T>(value: unknown): T {
   const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
@@ -41,11 +44,25 @@ export type Snapshot = {
   state: ReturnType<typeof toWireState>;
   next: (typeof ACTIONS)[number] | null;
   roles: { role: Role; claimed: boolean; connected: boolean; walletId: string }[];
+  presence: { online: number; admins: number; participants: number; waiting: number; assigned: number;
+    devices: { id: string; label: string; role: Role | null; connected: boolean }[] };
+  mockItems: MockItem[];
   session: { kind: "presenter" | "participant"; role: Role | null };
   events: WireEvent[];
   runs: { id: string; runNumber: number; createdAt: string; endedAt: string | null }[];
   serverTime: string;
 };
+
+async function queueRows(query: Query, runId: string): Promise<QueueRow[]> {
+  return rows<QueueRow>(query, "SELECT item_key, role, status FROM demo_queue_items WHERE run_id=$1 ORDER BY item_key", [runId]);
+}
+
+function wireQueue(rowsForRun: QueueRow[]): MockItem[] {
+  return MOCK_FIXTURES.flatMap(fixture => {
+    const row = rowsForRun.find(item => item.item_key === fixture.key);
+    return row ? [{ ...fixture, status: row.status }] : [];
+  });
+}
 
 function stateFrom(run: RunRow, financial: BalanceRow): ScenarioState {
   return {
@@ -100,7 +117,8 @@ async function appendEvent(tx: Query, room: RoomRow, run: RunRow, state: Scenari
   const index = previous ? Number(previous.event_index) + 1 : 1;
   const previousHash = previous?.event_hash ?? "0".repeat(64);
   const createdAt = new Date().toISOString();
-  const stateAfter = toWireState(state);
+  const queue = await queueRows(tx, run.id);
+  const stateAfter = { ...toWireState(state), demoQueue: Object.fromEntries(queue.map(item => [item.item_key, item.status])) };
   const amount = event.amount?.toString() ?? null;
   const reference = event.reference ?? null;
   const hash = hashEvent({ runId: run.id, index, type: event.type, actor: event.actor, onBehalfOf: event.onBehalfOf ?? null, label: event.label,
@@ -127,6 +145,10 @@ async function insertRun(tx: Query, roomId: string, runNumber: number) {
   const b = OPENING_BALANCES;
   await rows(tx, `INSERT INTO financial_states (run_id, cash_minor, fund_minor, pending_minor, obligations_minor) VALUES ($1,$2,$3,$4,$5)`,
     [id, b.cash.toString(), b.fund.toString(), b.pending.toString(), b.obligations.toString()]);
+  for (const fixture of MOCK_FIXTURES) {
+    await rows(tx, "INSERT INTO demo_queue_items (run_id, item_key, role, status) VALUES ($1,$2,$3,$4)",
+      [id, fixture.key, fixture.role, MOCK_INITIAL_STATUS[fixture.key]]);
+  }
   return id;
 }
 
@@ -180,6 +202,16 @@ export async function openDemoPresenter(token: string, requestId: string) {
   });
 }
 
+export async function isDemoPresenterToken(token: string): Promise<boolean> {
+  try {
+    const room = await roomByCode(db(), DEMO_ROOM_CODE);
+    return (await sessionFor(db(), room.id, token)).kind === "presenter";
+  } catch (error) {
+    if (error instanceof DomainError && (error.code === "ROOM_NOT_FOUND" || error.code === "NO_SESSION")) return false;
+    throw error;
+  }
+}
+
 async function ensureDemoRoom() {
   return db().begin(async tx => {
     const id = randomUUID();
@@ -224,8 +256,12 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
   const session = await sessionFor(tx, room.id, token);
   await rows(tx, "UPDATE sessions SET last_seen_at = now() WHERE id = $1", [session.id]);
   const { run, state } = await runAndState(tx, room.active_run_id);
-  const claims = await rows<{ role: Role; last_seen_at: string }>(tx,
-    "SELECT rc.role, s.last_seen_at FROM role_claims rc JOIN sessions s ON s.id=rc.session_id WHERE rc.room_id=$1", [room.id]);
+  const sessions = await rows<PresenceRow>(tx,
+    `SELECT s.id, s.kind, s.last_seen_at, rc.role FROM sessions s
+      LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
+      WHERE s.room_id=$1 AND (s.last_seen_at >= now() - interval '15 seconds' OR rc.role IS NOT NULL)
+      ORDER BY s.created_at`, [room.id]);
+  const queue = await queueRows(tx, run.id);
   const events = await rows<EventRow>(tx, "SELECT * FROM events WHERE run_id=$1 ORDER BY event_index", [run.id]);
   const runs = await rows<{ id: string; run_number: number; created_at: string; ended_at: string | null }>(tx,
     "SELECT id, run_number, created_at, ended_at FROM runs WHERE room_id=$1 ORDER BY run_number DESC", [room.id]);
@@ -234,10 +270,20 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
     status: room.status, mode: room.mode, scenario: "Friday customer redemptions", state: toWireState(state),
     next: nextAction(state.step),
     roles: ROLES.map(role => {
-      const claim = claims.find(c => c.role === role);
+      const claim = sessions.find(c => c.role === role);
       return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
         walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${room.code.trim()}` };
     }),
+    presence: (() => {
+      const online = sessions.filter(item => Date.now() - new Date(item.last_seen_at).getTime() < 15_000);
+      const participants = online.filter(item => item.kind === "participant");
+      return { online: online.length, admins: online.length - participants.length, participants: participants.length,
+        waiting: participants.filter(item => !item.role).length, assigned: participants.filter(item => item.role).length,
+        devices: session.kind === "presenter" ? sessions.filter(item => item.kind === "participant")
+          .map(item => ({ id: item.id, label: `Device ${item.id.slice(0, 6).toUpperCase()}`, role: item.role,
+            connected: Date.now() - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
+    })(),
+    mockItems: wireQueue(queue),
     session: { kind: session.kind, role: session.role }, events: events.map(eventWire),
     runs: runs.map(r => ({ id: r.id, runNumber: Number(r.run_number), createdAt: r.created_at, endedAt: r.ended_at })),
     serverTime: new Date().toISOString(),
@@ -286,6 +332,49 @@ export async function releaseRole(code: string, token: string, requestId: string
     await rows(tx, "DELETE FROM sessions WHERE id=$1 AND room_id=$2", [claim.session_id, room.id]);
     const event = await appendEvent(tx, room, run, state, { type: "role_released", actor: "presenter", onBehalfOf: role, label: `Presenter removed ${role}. They may rejoin using the QR link.` });
     return { eventId: event.id };
+  });
+}
+
+export async function leaveRole(code: string, token: string, requestId: string, runId: string) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (session.kind !== "participant" || !session.role) throw new DomainError("ROLE_REQUIRED", "Choose a role before leaving it.", 403);
+    await rows(tx, "DELETE FROM role_claims WHERE room_id=$1 AND session_id=$2", [room.id, session.id]);
+    const event = await appendEvent(tx, room, run, state,
+      { type: "role_left", actor: session.role, label: `${session.role} returned to role selection.` });
+    return { eventId: event.id, message: "Role released. Choose another available role." };
+  });
+}
+
+export async function kickDevice(code: string, token: string, requestId: string, runId: string, sessionId: string) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only an admin can remove a device.", 403);
+    const target = (await rows<{ role: Role | null }>(tx, `SELECT rc.role FROM sessions s
+      LEFT JOIN role_claims rc ON rc.room_id=s.room_id AND rc.session_id=s.id
+      WHERE s.id=$1 AND s.room_id=$2 AND s.kind='participant'`, [sessionId, room.id]))[0];
+    if (!target) throw new DomainError("DEVICE_NOT_FOUND", "This participant has already left.", 404);
+    await rows(tx, "DELETE FROM sessions WHERE id=$1 AND room_id=$2 AND kind='participant'", [sessionId, room.id]);
+    const event = await appendEvent(tx, room, run, state, { type: "device_kicked", actor: "presenter",
+      onBehalfOf: target.role, label: `Admin removed a ${target.role ?? "waiting"} device. It may rejoin using the QR link.` });
+    return { eventId: event.id, message: "Device removed. It can rejoin with the QR link." };
+  });
+}
+
+export async function completeMockItem(code: string, token: string, requestId: string, runId: string, itemKey: string) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before reviewing work.");
+    const fixture = fixtureByKey(itemKey);
+    if (!fixture) throw new DomainError("ITEM_NOT_FOUND", "This simulated work item does not exist.", 404);
+    if (session.kind !== "participant" || session.role !== fixture.role)
+      throw new DomainError("WRONG_ROLE", "This item belongs to another team.", 403);
+    const item = (await rows<QueueRow>(tx, "SELECT item_key, role, status FROM demo_queue_items WHERE run_id=$1 AND item_key=$2 FOR UPDATE",
+      [run.id, itemKey]))[0];
+    if (!item) throw new DomainError("ITEM_NOT_FOUND", "This item is not in the current run.", 404);
+    if (item.status === "complete") throw new DomainError("ALREADY_COMPLETE", "This item is already complete.");
+    await rows(tx, "UPDATE demo_queue_items SET status='complete', updated_at=now() WHERE run_id=$1 AND item_key=$2", [run.id, itemKey]);
+    const event = await appendEvent(tx, room, run, state, { type: "mock_item_completed", actor: fixture.role,
+      label: `${fixture.completedLabel}: ${fixture.title} (${fixture.reference}). Simulated background item; reserve balances unchanged.`,
+      reference: fixture.reference });
+    return { eventId: event.id, message: `${fixture.title} ${fixture.completedLabel.toLowerCase()}. Reserve balances did not change.` };
   });
 }
 
@@ -372,11 +461,15 @@ export async function getRunReplay(code: string, token: string, runId: string) {
   if (!run) throw new DomainError("RUN_NOT_FOUND", "This run is unavailable.", 404);
   const events = await rows<EventRow>(sql, "SELECT * FROM events WHERE run_id=$1 ORDER BY event_index", [runId]);
   const wireEvents = events.map(eventWire);
+  const queue = await queueRows(sql, runId);
   return { runId, runNumber: Number(run.run_number), opening: serializeBalances(OPENING_BALANCES),
-    events: wireEvents, closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : serializeBalances(OPENING_BALANCES) };
+    events: wireEvents, mockItems: wireQueue(queue),
+    closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : serializeBalances(OPENING_BALANCES) };
 }
 
 export async function cleanupExpired() {
   const result = await rows<{ id: string }>(db(), "DELETE FROM rooms WHERE expires_at <= now() RETURNING id");
+  await rows(db(), `DELETE FROM sessions WHERE room_id IN (SELECT id FROM rooms WHERE code=$1)
+    AND last_seen_at < now() - interval '24 hours'`, [DEMO_ROOM_CODE]);
   return result.length;
 }

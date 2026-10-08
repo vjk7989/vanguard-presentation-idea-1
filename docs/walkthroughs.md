@@ -2,12 +2,13 @@
 
 ## Main flow
 
-1. Open the shared control room and connect issuer, fund, and bank phones with the QR code. Confirm that refresh retains each role. The presenter may kick a participant; they can rejoin with the QR code or Rejoin button.
-2. Start. Issuer requests $200m; fund accepts it. Cash remains $300m.
-3. Fund processes redemption. Holdings become $1.5bn and pending proceeds $200m. Bank cash remains $300m.
-4. Bank confirms receipt. Pending becomes zero and bank cash becomes $500m.
-5. Issuer approves $450m payouts. Approval does not move cash.
-6. Bank confirms payouts. Cash becomes $50m; obligations become $1.55bn. Review results and replay.
+1. Enter the public admin dashboard and choose **Show QR**. Scan with issuer, fund, and bank phones. Watch the waiting-device count rise before roles are picked; refresh retains each claimed role. A participant can change roles. The admin may kick an assigned or waiting device; it can rejoin with the QR code or Rejoin button.
+2. On any role device, open a fictional background item and approve it. Its status and event history update for everyone, but Friday reserve balances remain unchanged. Reset restores its pending status in the new run.
+3. Start. Issuer requests $200m; fund accepts it. Cash remains $300m.
+4. Fund processes redemption. Holdings become $1.5bn and pending proceeds $200m. Bank cash remains $300m.
+5. Bank confirms receipt. Pending becomes zero and bank cash becomes $500m.
+6. Issuer approves $450m payouts. Approval does not move cash.
+7. Bank confirms payouts. Cash becomes $50m; obligations become $1.55bn. Review results and event-by-event replay, including the background item.
 
 ## Delayed confirmation
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ACTIONS, applyAction, formatMoney, initialState, parseBalances, serializeBalances, type ScenarioState } from "../../src/lib/domain";
 import { hashEvent } from "../../src/lib/ledger";
+import { formatMockAmount, MOCK_FIXTURES, MOCK_INITIAL_STATUS } from "../../src/lib/mock-queue";
 
 function atStep(step: number): ScenarioState {
   return ACTIONS.slice(0, step).reduce((state, action) => applyAction(state, action.type, action.role), initialState());
@@ -55,5 +56,20 @@ describe("linked simulated events", () => {
     expect(second).not.toBe(first);
     expect(hashEvent({ ...base, label: "Changed" })).not.toBe(first);
     expect(hashEvent({ ...base, onBehalfOf: "fund" })).not.toBe(first);
+  });
+});
+
+describe("fictional background work", () => {
+  it("has unique role-owned minor-unit items and an independent starting status", () => {
+    expect(new Set(MOCK_FIXTURES.map(item => item.key)).size).toBe(MOCK_FIXTURES.length);
+    expect(MOCK_FIXTURES.filter(item => item.role === "issuer")).toHaveLength(3);
+    expect(MOCK_FIXTURES.filter(item => item.role === "fund")).toHaveLength(3);
+    expect(MOCK_FIXTURES.filter(item => item.role === "bank")).toHaveLength(3);
+    expect(MOCK_FIXTURES.every(item => /^\d+$/.test(item.amount) && BigInt(item.amount) > 0n)).toBe(true);
+    expect(MOCK_FIXTURES.filter(item => MOCK_INITIAL_STATUS[item.key] === "pending")).toHaveLength(6);
+    expect(initialState().balances.cash).toBe(30_000_000_000n);
+    expect(formatMockAmount("235000000")).toBe("$2,350,000");
+    expect(formatMockAmount("112500000")).toBe("$1,125,000");
+    expect(formatMockAmount("12345")).toBe("$123.45");
   });
 });
