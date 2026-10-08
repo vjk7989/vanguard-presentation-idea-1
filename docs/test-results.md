@@ -12,7 +12,8 @@ Verified on 2026-10-09 for the live-presence and role-workspace update.
 | Production compilation | Pass — `pnpm build` without database credentials |
 | Graft drift | Pass — `pnpm exec graft build` then `pnpm graft:check` |
 | Supabase migration | Pass — `003_demo_queue.sql` applied to the dedicated `reserve-operations-lab` project; current `DEMO01` run has nine items, six pending, and RLS enabled |
-| Deployed multi-device run | Pending production smoke test after Git push and Vercel deployment |
+| Canonical Vercel smoke test | Pass — new homepage served, admin opened `DEMO01`, authenticated state returned nine queue items, and a separate participant session joined and appeared in the waiting count |
+| Full deployed four-device run | Pending — not exercised on the shared public room, to avoid changing its financial run during verification |
 
 Screenshots live in `docs/screenshots/`. The disposable PostgreSQL server was stopped after integration tests. Its ignored generated files remain under `.tmp/pg-integration-20261009` because the environment did not permit recursive removal; they are not committed.
 
