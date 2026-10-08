@@ -12,15 +12,15 @@ const event = (index: number, type: string, label: string, actor: string): WireE
 
 export function snapshot(kind: "presenter" | "participant", role: Role | null, status: Snapshot["status"] = "active"): Snapshot {
   const lobby = status === "lobby";
-  return { code: CODE, runId: RUN_ID, runNumber: 1, scenarioVersion: 2, revision: 3, status, mode: "conventional", scenario: "Friday customer redemptions", joinUrl: `https://vanguard-presentation-idea-1.vercel.app/join/${CODE}`,
+  return { code: CODE, runId: RUN_ID, runNumber: 1, ideaKey: 1, ideaState: {}, ideaActions: [], scenarioVersion: 2, revision: 3, status, mode: "conventional", scenario: "Friday customer redemptions", joinUrl: `https://vanguard-presentation-idea-1.vercel.app/join/${CODE}`,
     state: { version: 2, step: lobby ? 0 : 3, balances: lobby ? { ...balances, fund: "170000000000", pending: "0" } : balances, payoutApproved: false, bankDelayed: false },
     next: lobby ? { type: "request_redemption", role: "issuer", label: "Request $150m fund cash", result: "Issuer requested $150m." } : { type: "confirm_proceeds", role: "bank", label: "Confirm incoming $150m", result: "Bank confirmed receipt." },
     roles: (["issuer", "fund", "bank"] as Role[]).map(r => ({ role: r, claimed: !lobby || r === "issuer", connected: !lobby || r === "issuer", walletId: `DEMO-${r.toUpperCase()}-${CODE}` })),
     presence: { online: 2, admins: kind === "presenter" ? 1 : 0, participants: kind === "presenter" ? 1 : 2, waiting: 0, assigned: kind === "presenter" ? 1 : 2,
       devices: kind === "presenter" ? [{ id: "22222222-2222-4222-8222-222222222222", label: "Device 222222", role: "issuer", connected: true }] : [] },
-    mockItems: MOCK_FIXTURES.map(item => ({ ...item, status: MOCK_INITIAL_STATUS[item.key] })), cases: [],
+    mockItems: MOCK_FIXTURES.map(item => ({ ...item, status: MOCK_INITIAL_STATUS[item.key] })), cases: [], practiceItems: [],
     session: { kind, role }, events: lobby ? [] : [event(1, "request_redemption", "Issuer requested $150m. Balances have not changed.", "issuer"), event(2, "accept_redemption", "Fund operator accepted the request. Bank cash remains $300m.", "fund"), event(3, "process_redemption", "Fund holdings fell to $1.55bn. $150m proceeds are pending.", "fund")], latestEventIndex: lobby ? 0 : 3,
-    runs: [{ id: RUN_ID, runNumber: 1, createdAt: "2026-10-09T00:00:00.000Z", endedAt: null }], serverTime: "2026-10-09T00:04:00.000Z" };
+    runs: [{ id: RUN_ID, runNumber: 1, ideaKey: 1, createdAt: "2026-10-09T00:00:00.000Z", endedAt: null }], serverTime: "2026-10-09T00:04:00.000Z" };
 }
 
 export async function mockRoom(page: Page, data: Snapshot) {

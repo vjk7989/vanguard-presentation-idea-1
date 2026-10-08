@@ -1,4 +1,22 @@
-# Test results — current release
+# Test results — four-idea release
+
+Verified on 2026-10-09 against a local production server and intercepted API fixtures. The prior results below remain as historical release notes.
+
+| Check | Result |
+|---|---|
+| Strict TypeScript and ESLint | Pass — `pnpm typecheck`, `pnpm lint` |
+| Scenario and existing unit tests | Pass — 29 tests across 6 files; includes Ideas 2–4 transitions and practice/financial isolation |
+| Fixture Chrome browser flows | Pass — 54 Playwright tests, including all 12 new desks across Overview, Work, and Activity, role selection, QR, cross-profile sessions, same-profile tabs, kick/rejoin, accepted-event diagram updates, keyboard and axe checks |
+| Responsive and motion | Pass — tested 360px phones and 1366px desktop for every new desk; existing suite covers 320–430px, 200% text, and reduced motion |
+| Production compilation | Pass — `pnpm build` without local database credentials |
+| Graft drift | Pass after rebuilding the ignored local wiring graph |
+| Supabase migration | Pass — `005_multi_idea.sql` applied to the dedicated `reserve-operations-lab` project; old 17 events remained untouched, and the live room stayed on Idea 1 |
+| Database-backed integration | Pass — 11 tests on the isolated local PostgreSQL 17 cluster, including concurrent Idea 2 role claims, idea switching and restoration, retry-safe practice actions, financial isolation, stale-run rejection, prior-run replay, and existing transaction checks. The cluster was stopped after verification. |
+| Live deployment / physical device | Pending at this checkpoint; see release handoff for the final smoke result. No physical Chrome phone was available in the workspace. |
+
+Representative new phone and desktop captures are `docs/screenshots/idea-{2,3,4}-role-{360,1366}.png`. Browser tests used the installed Chrome channel and an intercepted API fixture; they do not establish live database performance or the two-second p95 target.
+
+## Previous Friday release
 
 Verified on 2026-10-09 for the deck-aligned Friday run and repeatable practice coordination.
 

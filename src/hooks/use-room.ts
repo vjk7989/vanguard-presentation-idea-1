@@ -20,6 +20,8 @@ export function useRoom(code: string) {
   const wasConnected = useRef(false);
   const suppressNext = useRef(false);
   const inFlight = useRef(false);
+  const pollId = useRef(0);
+  const lastPoll = useRef(0);
   const animationQueue = useRef<WireEvent[]>([]);
   const animationTimer = useRef<number | null>(null);
 
@@ -30,17 +32,21 @@ export function useRoom(code: string) {
       animationTimer.current = null;
       setAnimatedEvent(null);
       playNext();
-    }, 950);
+    }, animationQueue.current.length > 3 ? 420 : 900);
   }, []);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    const requestId = ++pollId.current;
+    lastPoll.current = Date.now();
     try {
       const previous = snapshotRef.current;
       const cursor = previous && seen.current !== null
         ? { revision: previous.revision, eventIndex: seen.current, runId: previous.runId } : undefined;
       const data = cursor ? await loadRoom(code, cursor) : await loadRoom(code);
+      if (requestId !== pollId.current) return;
+      if (previous && data.runId === previous.runId && data.revision < previous.revision) return;
       if ("changed" in data) {
         if (previous && previous.runId === data.runId) {
           const merged = { ...previous, revision: data.revision, roles: data.roles,
@@ -52,9 +58,9 @@ export function useRoom(code: string) {
         const sameRun = previous?.runId === data.runId;
         const latest = data.latestEventIndex ?? data.events.at(-1)?.index ?? 0;
         if (sameRun && wasConnected.current && !suppressNext.current && seen.current !== null &&
-          document.visibilityState === "visible") {
+          document.visibilityState === "visible" && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
           animationQueue.current.push(...data.events.filter(event =>
-            event.index > seen.current! && animatedTypes.has(event.type)));
+            event.index > seen.current! && (Boolean(event.route) || animatedTypes.has(event.type))));
           playNext();
         }
         if (!sameRun) {
@@ -76,16 +82,20 @@ export function useRoom(code: string) {
       setError(null);
       setErrorCode(null);
     } catch (cause) {
+      if (requestId !== pollId.current) return;
       wasConnected.current = false;
       setConnected(false);
       setError(cause instanceof Error ? cause.message : "Connection unavailable.");
       setErrorCode((cause as ApiError)?.code ?? null);
-    } finally { inFlight.current = false; }
+    } finally { if (requestId === pollId.current) inFlight.current = false; }
   }, [code, playNext]);
 
   useEffect(() => {
     queueMicrotask(() => { void refresh(); });
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 2000);
+    const timer = window.setInterval(() => {
+      const interval = snapshotRef.current?.session.kind === "presenter" ? 1000 : 2000;
+      if (document.visibilityState === "visible" && Date.now() - lastPoll.current >= interval) void refresh();
+    }, 1000);
     const onFocus = () => { if (document.visibilityState === "visible") void refresh(); };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") suppressNext.current = true;
@@ -107,6 +117,7 @@ export function useRoom(code: string) {
     setBusy(true);
     try {
       const result = await api<T>(`/api/rooms/${encodeURIComponent(code)}/${suffix}`, mutation(current.runId, data));
+      pollId.current++;
       inFlight.current = false;
       await refresh();
       return result;

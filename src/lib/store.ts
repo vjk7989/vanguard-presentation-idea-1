@@ -13,14 +13,17 @@ import { hashEvent } from "./ledger";
 import { DEMO_ROOM_CODE } from "./demo";
 import { fixtureByKey, MOCK_FIXTURES, MOCK_INITIAL_STATUS, type MockItem, type MockStatus } from "./mock-queue";
 import { advanceCase, CASE_PRESETS, nextCaseRole, type CaseAction, type CasePreset, type CaseStatus, type DemoCase } from "./demo-cases";
+import { getIdeaSpec, IDEA_TITLES, roleTitle, type IdeaKey } from "./ideas";
+import type { IdeaAction } from "./ideas/types";
+import type { PathKind } from "./ideas/types";
 
 type Query = postgres.Sql | postgres.TransactionSql;
 type Param = string | number | boolean | null;
 async function rows<T>(query: Query, statement: string, params: Param[] = []): Promise<T[]> {
   return (await query.unsafe(statement, params)) as unknown as T[];
 }
-type RoomRow = { id: string; code: string; status: RoomStatus; mode: Mode; revision: string; active_run_id: string; expires_at: string };
-type RunRow = { id: string; room_id: string; run_number: number; scenario_version: ScenarioVersion; step: number; payout_approved: boolean; bank_delayed: boolean };
+type RoomRow = { id: string; code: string; status: RoomStatus; mode: Mode; revision: string; active_run_id: string; active_idea: IdeaKey; expires_at: string };
+type RunRow = { id: string; room_id: string; run_number: number; scenario_version: ScenarioVersion; idea_key: IdeaKey; workflow_state: Record<string, unknown>; run_status: RoomStatus; step: number; payout_approved: boolean; bank_delayed: boolean };
 type SessionRow = { id: string; kind: "presenter" | "participant"; role: Role | null };
 type BalanceRow = { cash_minor: string; fund_minor: string; pending_minor: string; obligations_minor: string };
 type EventRow = { id: string; event_index: number; type: string; actor: string; on_behalf_of: Role | null; label: string; amount_minor: string | null; reference: string | null; previous_hash: string; event_hash: string; state_after: unknown; created_at: string };
@@ -28,10 +31,13 @@ type RequestRow = { response_json: unknown };
 type QueueRow = { item_key: string; role: Role; status: MockStatus };
 type CaseRow = { id: string; run_id: string; ordinal: number; reference: string; amount_minor: string; status: CaseStatus; created_at: string; updated_at: string };
 type PresenceRow = { id: string; kind: "presenter" | "participant"; role: Role | null; last_seen_at: string };
-type RunSummaryRow = { id: string; run_number: number; created_at: string; ended_at: string | null };
+type RunSummaryRow = { id: string; run_number: number; idea_key: IdeaKey; created_at: string; ended_at: string | null };
+type PracticeRow = { item_key: string; owner_role: Role; counterparty_role: Role; title: string; detail: string; status: PracticeStatus };
+export type PracticeStatus = "pending" | "acknowledged" | "clarification_requested" | "responded" | "flagged" | "resolved";
+export type PracticeAction = "acknowledge" | "request_clarification" | "respond" | "flag" | "resolve";
 type SnapshotReadRow = RunRow & BalanceRow & Pick<RoomRow, "code" | "status" | "mode" | "revision"> & {
   session_kind: SessionRow["kind"] | null; session_role: Role | null;
-  sessions: PresenceRow[]; queue: QueueRow[]; cases: CaseRow[]; events: EventRow[]; runs: RunSummaryRow[]; latest_event_index: number;
+  active_idea: IdeaKey; sessions: PresenceRow[]; queue: QueueRow[]; cases: CaseRow[]; practice: PracticeRow[]; events: EventRow[]; runs: RunSummaryRow[]; latest_event_index: number;
 };
 
 function jsonObject<T>(value: unknown): T {
@@ -50,22 +56,25 @@ export type WireEvent = {
   id: string; index: number; type: string; actor: string; onBehalfOf: Role | null;
   label: string; amount: string | null; reference: string | null;
   previousHash: string; hash: string; stateAfter: unknown; createdAt: string;
+  route?: { source: string; target: string; kind: PathKind };
 };
 export type Snapshot = {
-  code: string; runId: string; runNumber: number; scenarioVersion: ScenarioVersion; revision: number; status: RoomStatus; mode: Mode;
+  code: string; runId: string; runNumber: number; ideaKey: IdeaKey; ideaState: Record<string, unknown>; ideaActions: IdeaAction[];
+  scenarioVersion: ScenarioVersion; revision: number; status: RoomStatus; mode: Mode;
   joinUrl?: string;
-  scenario: "Friday customer redemptions";
+  scenario: string;
   state: ReturnType<typeof toWireState>;
-  next: ReturnType<typeof nextAction>;
+  next: ReturnType<typeof nextAction> | null;
   roles: { role: Role; claimed: boolean; connected: boolean; walletId: string }[];
   presence: { online: number; admins: number; participants: number; waiting: number; assigned: number;
     devices: { id: string; label: string; role: Role | null; connected: boolean }[] };
   mockItems: MockItem[];
   cases: DemoCase[];
+  practiceItems: { itemKey: string; ownerRole: Role; counterpartyRole: Role; title: string; detail: string; status: PracticeStatus }[];
   session: { kind: "presenter" | "participant"; role: Role | null };
   events: WireEvent[];
   latestEventIndex: number;
-  runs: { id: string; runNumber: number; createdAt: string; endedAt: string | null }[];
+  runs: { id: string; runNumber: number; ideaKey: IdeaKey; createdAt: string; endedAt: string | null }[];
   serverTime: string;
 };
 export type RoomPulse = {
@@ -81,16 +90,21 @@ async function caseRows(query: Query, runId: string): Promise<CaseRow[]> {
   return rows<CaseRow>(query, "SELECT id, run_id, ordinal, reference, amount_minor, status, created_at, updated_at FROM demo_cases WHERE run_id=$1 ORDER BY ordinal", [runId]);
 }
 
+async function practiceRows(query: Query, runId: string): Promise<PracticeRow[]> {
+  return rows<PracticeRow>(query, "SELECT item_key, owner_role, counterparty_role, title, detail, status FROM practice_items WHERE run_id=$1 ORDER BY item_key", [runId]);
+}
+
 function wireCase(row: CaseRow): DemoCase {
   return { id: row.id, ordinal: Number(row.ordinal), reference: row.reference, amount: row.amount_minor,
     status: row.status, nextRole: nextCaseRole(row.status), createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
-function rolesFor(sessions: PresenceRow[], code: string): Snapshot["roles"] {
-  return ROLES.map(role => {
+function rolesFor(sessions: PresenceRow[], code: string, ideaKey: IdeaKey): Snapshot["roles"] {
+  const roleIds: Role[] = ideaKey === 1 ? [...ROLES] : (getIdeaSpec(ideaKey)?.roles.map(item => item.id as Role) ?? []);
+  return roleIds.map(role => {
     const claim = sessions.find(item => item.role === role);
     return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
-      walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${code}` };
+      walletId: `DEMO-${role.toUpperCase().replaceAll("_", "-")}-${code}` };
   });
 }
 
@@ -112,6 +126,10 @@ function wireQueue(rowsForRun: QueueRow[]): MockItem[] {
 }
 
 function stateFrom(run: RunRow, financial: BalanceRow): ScenarioState {
+  if (Number(run.idea_key) !== 1) {
+    return { version: 2, step: 0, payoutApproved: false, bankDelayed: false,
+      balances: { cash: 0n, fund: 0n, pending: 0n, obligations: 0n, requiredBuffer: 0n, plannedPayout: 0n, redemption: 0n } };
+  }
   const opening = openingBalances(Number(run.scenario_version) === 2 ? 2 : 1);
   return {
     version: Number(run.scenario_version) === 2 ? 2 : 1,
@@ -126,17 +144,20 @@ function stateFrom(run: RunRow, financial: BalanceRow): ScenarioState {
 }
 
 function eventWire(event: EventRow): WireEvent {
+  const stateAfter = jsonObject<Record<string, unknown>>(event.state_after);
+  const route = stateAfter.route && typeof stateAfter.route === "object" && !Array.isArray(stateAfter.route)
+    ? stateAfter.route as WireEvent["route"] : undefined;
   return {
     id: event.id, index: Number(event.event_index), type: event.type, actor: event.actor,
     onBehalfOf: event.on_behalf_of, label: event.label, amount: event.amount_minor,
     reference: event.reference, previousHash: event.previous_hash, hash: event.event_hash,
-    stateAfter: jsonObject(event.state_after), createdAt: event.created_at,
+    stateAfter, createdAt: event.created_at, ...(route ? { route } : {}),
   };
 }
 
 async function roomByCode(query: Query, code: string, lock = false): Promise<RoomRow> {
   const found = await rows<RoomRow>(query,
-    `SELECT id, code, status, mode, revision, active_run_id, expires_at FROM rooms WHERE code = $1 ${lock ? "FOR UPDATE" : ""}`,
+    `SELECT id, code, status, mode, revision, active_run_id, active_idea, expires_at FROM rooms WHERE code = $1 ${lock ? "FOR UPDATE" : ""}`,
     [code.toUpperCase()]);
   const room = found[0];
   if (!room || new Date(room.expires_at).getTime() <= Date.now()) throw new DomainError("ROOM_NOT_FOUND", "This room has expired or does not exist.", 404);
@@ -145,7 +166,9 @@ async function roomByCode(query: Query, code: string, lock = false): Promise<Roo
 
 async function sessionFor(query: Query, roomId: string, token: string): Promise<SessionRow> {
   const found = await rows<SessionRow>(query,
-    `SELECT s.id, s.kind, rc.role FROM sessions s LEFT JOIN role_claims rc ON rc.session_id = s.id AND rc.room_id = s.room_id WHERE s.room_id = $1 AND s.token_hash = $2`,
+    `SELECT s.id, s.kind, rc.role FROM sessions s JOIN rooms room ON room.id=s.room_id
+      LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id AND rc.idea_key=room.active_idea
+      WHERE s.room_id=$1 AND s.token_hash=$2`,
     [roomId, tokenHash(token)]);
   if (!found[0]) throw new DomainError("NO_SESSION", "Join this room to continue.", 401);
   return found[0];
@@ -160,6 +183,7 @@ async function runAndState(query: Query, runId: string, lock = false) {
 
 async function appendEvent(tx: Query, room: RoomRow, run: RunRow, state: ScenarioState, event: {
   type: string; actor: string; onBehalfOf?: Role | null; label: string; amount?: bigint | null; reference?: string | null;
+  route?: { source: string; target: string; kind: PathKind };
 }) {
   const previous = (await rows<{ event_index: number; event_hash: string }>(tx,
     "SELECT event_index, event_hash FROM events WHERE run_id = $1 ORDER BY event_index DESC LIMIT 1", [run.id]))[0];
@@ -168,8 +192,17 @@ async function appendEvent(tx: Query, room: RoomRow, run: RunRow, state: Scenari
   const createdAt = new Date().toISOString();
   const queue = await queueRows(tx, run.id);
   const cases = await caseRows(tx, run.id);
-  const stateAfter = { ...toWireState(state), demoQueue: Object.fromEntries(queue.map(item => [item.item_key, item.status])),
-    demoCases: Object.fromEntries(cases.map(item => [item.reference, item.status])) };
+  const practice = await practiceRows(tx, run.id);
+  const workflow = Number(run.idea_key) === 1 ? null : (await rows<{ workflow_state: Record<string, unknown> }>(tx,
+    "SELECT workflow_state FROM runs WHERE id=$1", [run.id]))[0]?.workflow_state;
+  const stateAfter = Number(run.idea_key) === 1
+    ? { ...toWireState(state), demoQueue: Object.fromEntries(queue.map(item => [item.item_key, item.status])),
+      demoCases: Object.fromEntries(cases.map(item => [item.reference, item.status])),
+      practice: Object.fromEntries(practice.map(item => [item.item_key, item.status])),
+      ...(event.route ? { route: event.route } : {}) }
+    : { ideaKey: Number(run.idea_key), workflow: workflow ?? {},
+      practice: Object.fromEntries(practice.map(item => [item.item_key, item.status])),
+      ...(event.route ? { route: event.route } : {}) };
   const amount = event.amount?.toString() ?? null;
   const reference = event.reference ?? null;
   const hash = hashEvent({ runId: run.id, index, type: event.type, actor: event.actor, onBehalfOf: event.onBehalfOf ?? null, label: event.label,
@@ -190,16 +223,43 @@ async function saveState(tx: Query, run: RunRow, state: ScenarioState) {
       state.balances.pending.toString(), state.balances.obligations.toString()]);
 }
 
-async function insertRun(tx: Query, roomId: string, runNumber: number) {
+function practiceFixtures(ideaKey: IdeaKey) {
+  if (ideaKey === 1) return [
+    { key: "issuer-payee-check", owner: "issuer", counterpart: "bank", title: "Payee instruction review", detail: "Practice · verify a fictional holder reference." },
+    { key: "fund-liquidity-note", owner: "fund", counterpart: "issuer", title: "Liquidity note", detail: "Practice · review a fictional redemption status." },
+    { key: "bank-trace-request", owner: "bank", counterpart: "issuer", title: "Payment trace", detail: "Practice · answer a fictional bank reference query." },
+  ];
+  const roles = getIdeaSpec(ideaKey)?.roles ?? [];
+  return roles.flatMap((role, roleIndex) => role.sampleRecords.slice(1, 3).map((record, index) => ({
+    key: `${role.id}-support-${index + 1}`, owner: role.id,
+    counterpart: roles[(roleIndex + 1) % roles.length]?.id ?? role.id,
+    title: record.title, detail: `Practice · ${record.detail}`,
+  })));
+}
+
+async function seedPracticeItems(tx: Query, runId: string, ideaKey: IdeaKey) {
+  for (const fixture of practiceFixtures(ideaKey)) {
+    await rows(tx, `INSERT INTO practice_items (run_id, item_key, owner_role, counterparty_role, title, detail)
+      VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (run_id,item_key) DO NOTHING`,
+      [runId, fixture.key, fixture.owner, fixture.counterpart, fixture.title, fixture.detail]);
+  }
+}
+
+async function insertRun(tx: Query, roomId: string, runNumber: number, ideaKey: IdeaKey = 1, status: RoomStatus = "lobby") {
   const id = randomUUID();
-  await rows(tx, "INSERT INTO runs (id, room_id, run_number, scenario_version) VALUES ($1,$2,$3,2)", [id, roomId, runNumber]);
-  const b = openingBalances(2);
+  const workflowState = ideaKey === 1 ? {} : getIdeaSpec(ideaKey)!.initialState();
+  await rows(tx, `INSERT INTO runs (id, room_id, run_number, scenario_version, idea_key, workflow_state, run_status)
+    VALUES ($1,$2,$3,2,$4,$5::jsonb,$6)`, [id, roomId, runNumber, ideaKey, JSON.stringify(workflowState), status]);
+  const b = ideaKey === 1 ? openingBalances(2) : {
+    cash: 0n, fund: 0n, pending: 0n, obligations: 0n,
+  };
   await rows(tx, `INSERT INTO financial_states (run_id, cash_minor, fund_minor, pending_minor, obligations_minor) VALUES ($1,$2,$3,$4,$5)`,
     [id, b.cash.toString(), b.fund.toString(), b.pending.toString(), b.obligations.toString()]);
-  for (const fixture of MOCK_FIXTURES) {
+  for (const fixture of ideaKey === 1 ? MOCK_FIXTURES : []) {
     await rows(tx, "INSERT INTO demo_queue_items (run_id, item_key, role, status) VALUES ($1,$2,$3,$4)",
       [id, fixture.key, fixture.role, MOCK_INITIAL_STATUS[fixture.key]]);
   }
+  await seedPracticeItems(tx, id, ideaKey);
   return id;
 }
 
@@ -296,7 +356,10 @@ export async function joinRoom(code: string, token: string, runId: string, previ
         throw new DomainError("ADMIN_SESSION", "This Chrome profile is already the admin. Open the QR link in another profile or device to choose a role.", 409);
     }
     const existing = await rows<{ join_run_id: string | null }>(tx, "SELECT join_run_id FROM sessions WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(token)]);
-    if (existing[0]) return { code: room.code.trim(), runId: existing[0].join_run_id ?? room.active_run_id, reused: previous[0]?.kind === "participant" };
+    // A repeated join is a retry of the original request. The room snapshot,
+    // fetched immediately afterward, supplies the current idea/run pointer.
+    if (existing[0]) return { code: room.code.trim(), runId: existing[0].join_run_id ?? room.active_run_id,
+      reused: previous[0]?.kind === "participant" };
     if (room.active_run_id !== runId) throw new DomainError("STALE_RUN", "This join link has an old run. Refresh the page.");
     if (previous[0]?.kind === "participant" && previousToken) {
       await rows(tx, "UPDATE sessions SET last_seen_at=now() WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(previousToken)]);
@@ -315,9 +378,9 @@ export async function joinRoom(code: string, token: string, runId: string, previ
 }
 
 export async function roomPreview(code: string) {
-  const room = (await rows<Pick<RoomRow, "code" | "active_run_id" | "status" | "expires_at"> & { claimed_roles: Role[] }>(db(),
-    `SELECT room.code, room.active_run_id, room.status, room.expires_at,
-      (SELECT COALESCE(json_agg(role), '[]'::json) FROM role_claims WHERE room_id=room.id) AS claimed_roles
+  const room = (await rows<Pick<RoomRow, "code" | "active_run_id" | "active_idea" | "status" | "expires_at"> & { claimed_roles: Role[] }>(db(),
+    `SELECT room.code, room.active_run_id, room.active_idea, room.status, room.expires_at,
+      (SELECT COALESCE(json_agg(role), '[]'::json) FROM role_claims WHERE room_id=room.id AND idea_key=room.active_idea) AS claimed_roles
       FROM rooms room WHERE room.code=$1`, [code.toUpperCase()]))[0];
   const expiresAt = room ? new Date(room.expires_at).getTime() : 0;
   if (code.toUpperCase() === DEMO_ROOM_CODE && expiresAt <= Date.now() + 365 * 24 * 60 * 60 * 1000) {
@@ -326,26 +389,28 @@ export async function roomPreview(code: string) {
   }
   if (!room || expiresAt <= Date.now()) throw new DomainError("ROOM_NOT_FOUND", "This room has expired or does not exist.", 404);
   const claimed = jsonArray<Role>(room.claimed_roles);
-  return { code: room.code.trim(), runId: room.active_run_id, status: room.status,
-    roles: ROLES.map(role => ({ role, claimed: claimed.includes(role) })) };
+  const ideaKey = Number(room.active_idea) as IdeaKey;
+  const roles: Role[] = ideaKey === 1 ? [...ROLES] : getIdeaSpec(ideaKey)?.roles.map(item => item.id as Role) ?? [];
+  return { code: room.code.trim(), runId: room.active_run_id, status: room.status, ideaKey,
+    roles: roles.map(role => ({ role, title: roleTitle(ideaKey, role), claimed: claimed.includes(role) })) };
 }
 
 export async function getRoomPoll(code: string, token: string, afterRevision: number,
   afterEventIndex: number, knownRunId: string): Promise<Snapshot | RoomPulse> {
-  const result = await rows<{ code: string; revision: string; active_run_id: string;
+  const result = await rows<{ code: string; revision: string; active_run_id: string; active_idea: IdeaKey;
     session_kind: SessionRow["kind"] | null; sessions: PresenceRow[] }>(db(), `
     WITH target_room AS MATERIALIZED (
-      SELECT id, code, revision, active_run_id FROM rooms WHERE code=$1 AND expires_at>now()
+      SELECT id, code, revision, active_run_id, active_idea FROM rooms WHERE code=$1 AND expires_at>now()
     ), heartbeat AS (
       UPDATE sessions s SET last_seen_at=now() FROM target_room room
       WHERE s.room_id=room.id AND s.token_hash=$2
       RETURNING s.id, s.kind, s.last_seen_at
     )
-    SELECT room.code, room.revision, room.active_run_id, heartbeat.kind AS session_kind,
+    SELECT room.code, room.revision, room.active_run_id, room.active_idea, heartbeat.kind AS session_kind,
       (SELECT COALESCE(json_agg(json_build_object('id', s.id, 'kind', s.kind,
         'last_seen_at', CASE WHEN s.id=heartbeat.id THEN heartbeat.last_seen_at ELSE s.last_seen_at END,
         'role', rc.role) ORDER BY s.created_at), '[]'::json)
-        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
+        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id AND rc.idea_key=room.active_idea
         WHERE s.room_id=room.id AND (s.id=heartbeat.id OR s.last_seen_at>=now()-interval '15 seconds' OR rc.role IS NOT NULL)
       ) AS sessions
     FROM target_room room LEFT JOIN heartbeat ON true`, [code.toUpperCase(), tokenHash(token)]);
@@ -358,7 +423,7 @@ export async function getRoomPoll(code: string, token: string, afterRevision: nu
   }
   const sessions = jsonArray<PresenceRow>(row.sessions);
   return { changed: false, code: row.code.trim(), runId: row.active_run_id, revision,
-    roles: rolesFor(sessions, row.code.trim()), presence: presenceFor(sessions, row.session_kind),
+    roles: rolesFor(sessions, row.code.trim(), Number(row.active_idea) as IdeaKey), presence: presenceFor(sessions, row.session_kind),
     serverTime: new Date().toISOString() };
 }
 
@@ -368,7 +433,7 @@ export async function getSnapshot(code: string, token: string, afterEventIndex =
   // This statement also avoids a database round trip for every section of the view.
   const result = await rows<SnapshotReadRow>(db(), `
     WITH target_room AS MATERIALIZED (
-      SELECT id, code, status, mode, revision, active_run_id
+      SELECT id, code, status, mode, revision, active_run_id, active_idea
       FROM rooms WHERE code=$1 AND expires_at>now()
     ), heartbeat AS (
       UPDATE sessions s SET last_seen_at=now()
@@ -376,26 +441,29 @@ export async function getSnapshot(code: string, token: string, afterEventIndex =
       WHERE s.room_id=room.id AND s.token_hash=$2
       RETURNING s.id, s.kind, s.last_seen_at
     )
-    SELECT run.id, run.room_id, run.run_number, run.scenario_version, run.step, run.payout_approved, run.bank_delayed,
-      room.code, room.status, room.mode, room.revision,
+    SELECT run.id, run.room_id, run.run_number, run.scenario_version, run.idea_key, run.workflow_state, run.run_status,
+      run.step, run.payout_approved, run.bank_delayed,
+      room.code, room.status, room.mode, room.revision, room.active_idea,
       financial.cash_minor, financial.fund_minor, financial.pending_minor, financial.obligations_minor,
       heartbeat.kind AS session_kind,
-      (SELECT role FROM role_claims WHERE room_id=room.id AND session_id=heartbeat.id) AS session_role,
+      (SELECT role FROM role_claims WHERE room_id=room.id AND idea_key=room.active_idea AND session_id=heartbeat.id) AS session_role,
       (SELECT COALESCE(json_agg(json_build_object(
         'id', s.id, 'kind', s.kind,
         'last_seen_at', CASE WHEN s.id=heartbeat.id THEN heartbeat.last_seen_at ELSE s.last_seen_at END,
         'role', rc.role) ORDER BY s.created_at), '[]'::json)
-        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
+        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id AND rc.idea_key=room.active_idea
         WHERE s.room_id=room.id AND (s.id=heartbeat.id OR s.last_seen_at>=now()-interval '15 seconds' OR rc.role IS NOT NULL)
       ) AS sessions,
       (SELECT COALESCE(json_agg(json_build_object('item_key', item_key, 'role', role, 'status', status) ORDER BY item_key), '[]'::json)
         FROM demo_queue_items WHERE run_id=run.id) AS queue,
       (SELECT COALESCE(json_agg(row_to_json(c) ORDER BY c.ordinal), '[]'::json)
         FROM demo_cases c WHERE c.run_id=run.id) AS cases,
+      (SELECT COALESCE(json_agg(row_to_json(p) ORDER BY p.item_key), '[]'::json)
+        FROM practice_items p WHERE p.run_id=run.id) AS practice,
       (SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.event_index), '[]'::json)
         FROM events e WHERE e.run_id=run.id AND e.event_index>$3) AS events,
       (SELECT COALESCE(MAX(e.event_index),0) FROM events e WHERE e.run_id=run.id) AS latest_event_index,
-      (SELECT COALESCE(json_agg(json_build_object('id', id, 'run_number', run_number,
+      (SELECT COALESCE(json_agg(json_build_object('id', id, 'run_number', run_number, 'idea_key', idea_key,
         'created_at', created_at, 'ended_at', ended_at) ORDER BY run_number DESC), '[]'::json)
         FROM runs WHERE room_id=room.id) AS runs
     FROM target_room room
@@ -412,19 +480,27 @@ export async function getSnapshot(code: string, token: string, afterEventIndex =
   const sessions = jsonArray<PresenceRow>(row.sessions);
   const queue = jsonArray<QueueRow>(row.queue);
   const cases = jsonArray<CaseRow>(row.cases);
+  const practice = jsonArray<PracticeRow>(row.practice);
   const events = jsonArray<EventRow>(row.events);
   const runs = jsonArray<RunSummaryRow>(row.runs);
   const session = { kind: row.session_kind, role: row.session_role };
+  const ideaKey = Number(row.active_idea) as IdeaKey;
+  const ideaState = ideaKey === 1 ? {} : jsonObject<Record<string, unknown>>(row.workflow_state);
+  const spec = getIdeaSpec(ideaKey);
   return {
-    code: row.code.trim(), runId: row.id, runNumber: Number(row.run_number), scenarioVersion: state.version, revision: Number(row.revision),
-    status: row.status, mode: row.mode, scenario: "Friday customer redemptions", state: toWireState(state),
-    next: nextAction(state.step, state.version),
-    roles: rolesFor(sessions, row.code.trim()),
+    code: row.code.trim(), runId: row.id, runNumber: Number(row.run_number), ideaKey, ideaState,
+    ideaActions: spec?.actions(ideaState) ?? [], scenarioVersion: state.version, revision: Number(row.revision),
+    status: row.status, mode: row.mode, scenario: ideaKey === 1 ? "Friday customer redemptions" : IDEA_TITLES[ideaKey], state: toWireState(state),
+    next: ideaKey === 1 ? nextAction(state.step, state.version) : null,
+    roles: rolesFor(sessions, row.code.trim(), ideaKey),
     presence: presenceFor(sessions, session.kind),
     mockItems: wireQueue(queue),
     cases: cases.map(wireCase),
+    practiceItems: practice.map(item => ({ itemKey: item.item_key, ownerRole: item.owner_role,
+      counterpartyRole: item.counterparty_role, title: item.title, detail: item.detail, status: item.status })),
     session, events: events.map(eventWire), latestEventIndex: Number(row.latest_event_index),
-    runs: runs.map(r => ({ id: r.id, runNumber: Number(r.run_number), createdAt: r.created_at, endedAt: r.ended_at })),
+    runs: runs.map(r => ({ id: r.id, runNumber: Number(r.run_number), ideaKey: Number(r.idea_key) as IdeaKey,
+      createdAt: r.created_at, endedAt: r.ended_at })),
     serverTime: new Date().toISOString(),
   };
 }
@@ -455,9 +531,11 @@ async function mutate(code: string, token: string, requestId: string, runId: str
 export async function claimRole(code: string, token: string, requestId: string, runId: string, role: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
     if (session.kind !== "participant") throw new DomainError("PRESENTER_ROLE", "Use a participant device to claim a role.", 403);
-    if (!ROLES.includes(role)) throw new DomainError("BAD_ROLE", "Choose an available role.", 400);
-    await rows(tx, "INSERT INTO role_claims (room_id, role, session_id) VALUES ($1,$2,$3)", [room.id, role, session.id]);
-    const event = await appendEvent(tx, room, run, state, { type: "role_claimed", actor: role, label: `${role} joined the room.` });
+    const choices: string[] = room.active_idea === 1 ? [...ROLES] : getIdeaSpec(room.active_idea)?.roles.map(item => item.id) ?? [];
+    if (!choices.includes(role)) throw new DomainError("BAD_ROLE", "Choose an available role for this idea.", 400);
+    await rows(tx, "INSERT INTO role_claims (room_id, idea_key, role, session_id) VALUES ($1,$2,$3,$4)", [room.id, room.active_idea, role, session.id]);
+    const event = await appendEvent(tx, room, run, state, { type: "role_claimed", actor: role,
+      label: `${roleTitle(room.active_idea, role)} joined ${IDEA_TITLES[room.active_idea]}.` });
     return { eventId: event.id };
   });
 }
@@ -465,7 +543,7 @@ export async function claimRole(code: string, token: string, requestId: string, 
 export async function releaseRole(code: string, token: string, requestId: string, runId: string, role: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
     if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only the presenter can remove a participant.", 403);
-    const claim = (await rows<{ session_id: string }>(tx, "SELECT session_id FROM role_claims WHERE room_id=$1 AND role=$2", [room.id, role]))[0];
+    const claim = (await rows<{ session_id: string }>(tx, "SELECT session_id FROM role_claims WHERE room_id=$1 AND idea_key=$2 AND role=$3", [room.id, room.active_idea, role]))[0];
     if (!claim) throw new DomainError("ROLE_AVAILABLE", "This role is already available.", 409);
     await rows(tx, "DELETE FROM sessions WHERE id=$1 AND room_id=$2", [claim.session_id, room.id]);
     const event = await appendEvent(tx, room, run, state, { type: "role_released", actor: "presenter", onBehalfOf: role, label: `Presenter removed ${role}. They may rejoin using the QR link.` });
@@ -476,7 +554,7 @@ export async function releaseRole(code: string, token: string, requestId: string
 export async function leaveRole(code: string, token: string, requestId: string, runId: string) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
     if (session.kind !== "participant" || !session.role) throw new DomainError("ROLE_REQUIRED", "Choose a role before leaving it.", 403);
-    await rows(tx, "DELETE FROM role_claims WHERE room_id=$1 AND session_id=$2", [room.id, session.id]);
+    await rows(tx, "DELETE FROM role_claims WHERE room_id=$1 AND idea_key=$2 AND session_id=$3", [room.id, room.active_idea, session.id]);
     const event = await appendEvent(tx, room, run, state,
       { type: "role_left", actor: session.role, label: `${session.role} returned to role selection.` });
     return { eventId: event.id, message: "Role released. Choose another available role." };
@@ -487,8 +565,8 @@ export async function kickDevice(code: string, token: string, requestId: string,
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
     if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only an admin can remove a device.", 403);
     const target = (await rows<{ role: Role | null }>(tx, `SELECT rc.role FROM sessions s
-      LEFT JOIN role_claims rc ON rc.room_id=s.room_id AND rc.session_id=s.id
-      WHERE s.id=$1 AND s.room_id=$2 AND s.kind='participant'`, [sessionId, room.id]))[0];
+      LEFT JOIN role_claims rc ON rc.room_id=s.room_id AND rc.session_id=s.id AND rc.idea_key=$3
+      WHERE s.id=$1 AND s.room_id=$2 AND s.kind='participant'`, [sessionId, room.id, room.active_idea]))[0];
     if (!target) throw new DomainError("DEVICE_NOT_FOUND", "This participant has already left.", 404);
     await rows(tx, "DELETE FROM sessions WHERE id=$1 AND room_id=$2 AND kind='participant'", [sessionId, room.id]);
     const event = await appendEvent(tx, room, run, state, { type: "device_kicked", actor: "presenter",
@@ -499,6 +577,7 @@ export async function kickDevice(code: string, token: string, requestId: string,
 
 export async function completeMockItem(code: string, token: string, requestId: string, runId: string, itemKey: string) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "This reserve item belongs to Idea 1.", 409);
     if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before reviewing work.");
     const fixture = fixtureByKey(itemKey);
     if (!fixture) throw new DomainError("ITEM_NOT_FOUND", "This simulated work item does not exist.", 404);
@@ -519,6 +598,7 @@ export async function completeMockItem(code: string, token: string, requestId: s
 export async function createDemoCase(code: string, token: string, requestId: string, runId: string,
   preset: CasePreset, onBehalfOf?: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "Reserve practice cases belong to Idea 1.", 409);
     if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before opening a practice case.");
     if (!(preset in CASE_PRESETS)) throw new DomainError("BAD_PRESET", "Choose a practice amount.", 400);
     if (session.kind === "participant" && (session.role !== "issuer" || onBehalfOf))
@@ -543,6 +623,7 @@ export async function createDemoCase(code: string, token: string, requestId: str
 export async function advanceDemoCase(code: string, token: string, requestId: string, runId: string,
   caseId: string, action: CaseAction, onBehalfOf?: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "Reserve practice cases belong to Idea 1.", 409);
     if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before reviewing practice cases.");
     if (session.kind === "participant" && onBehalfOf)
       throw new DomainError("PRESENTER_ONLY", "Only an admin can act on behalf of a role.", 403);
@@ -566,6 +647,7 @@ export async function advanceDemoCase(code: string, token: string, requestId: st
 export async function performAction(code: string, token: string, requestId: string, runId: string,
   action: ActionType, onBehalfOf?: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "This action belongs to the reserve scenario.", 409);
     if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before acting.");
     const role = session.kind === "presenter" ? onBehalfOf : session.role;
     if (!role) throw new DomainError("ROLE_REQUIRED", "Claim a role before acting.", 403);
@@ -586,52 +668,148 @@ export async function performAction(code: string, token: string, requestId: stri
   });
 }
 
-export async function controlRoom(code: string, token: string, requestId: string, runId: string, control: ControlType, mode?: Mode) {
+export async function performIdeaAction(code: string, token: string, requestId: string, runId: string,
+  actionId: string, onBehalfOf?: Role) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.active_idea === 1) throw new DomainError("WRONG_IDEA", "Use the reserve actions for Idea 1.", 409);
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume this idea before acting.");
+    const spec = getIdeaSpec(room.active_idea);
+    if (!spec) throw new DomainError("BAD_IDEA", "This idea is unavailable.", 400);
+    const workflow = jsonObject<Record<string, unknown>>(run.workflow_state);
+    const action = spec.actions(workflow).find(item => item.id === actionId);
+    if (!action) throw new DomainError("WRONG_STEP", "This action is not available at the current step.");
+    const actorRole = action.role === "presenter" ? null : action.role as Role;
+    if (session.kind === "participant") {
+      if (onBehalfOf || !actorRole || session.role !== actorRole)
+        throw new DomainError("WRONG_ROLE", "This action belongs to another desk.", 403);
+    } else if (action.role === "presenter") {
+      if (onBehalfOf) throw new DomainError("BAD_TAKEOVER", "This presenter step is not a role takeover.", 400);
+    } else if (onBehalfOf !== actorRole) {
+      throw new DomainError("ROLE_REQUIRED", "Select the desk you are acting for.", 403);
+    }
+    let transition;
+    try { transition = spec.transition(workflow, actionId); }
+    catch { throw new DomainError("WRONG_STEP", "This action is not valid at the current step."); }
+    await rows(tx, "UPDATE runs SET workflow_state=$2::jsonb WHERE id=$1", [run.id, JSON.stringify(transition.state)]);
+    const actor = session.kind === "presenter" ? "presenter" : action.role;
+    const event = await appendEvent(tx, room, run, state, { type: actionId, actor,
+      onBehalfOf: session.kind === "presenter" ? actorRole : null, label: transition.label,
+      reference: transition.reference, route: { source: transition.source, target: transition.target, kind: transition.pathKind } });
+    return { eventId: event.id, message: transition.label };
+  });
+}
+
+function nextPracticeStatus(status: PracticeStatus, action: PracticeAction, isOwner: boolean): PracticeStatus {
+  if (isOwner) {
+    if (status === "pending" && action === "acknowledge") return "acknowledged";
+    if ((status === "pending" || status === "acknowledged") && action === "request_clarification") return "clarification_requested";
+    if (status !== "resolved" && action === "flag") return "flagged";
+    if (["acknowledged", "responded", "flagged"].includes(status) && action === "resolve") return "resolved";
+  } else if (status === "clarification_requested" && action === "respond") return "responded";
+  throw new DomainError("WRONG_PRACTICE_STEP", "This practice action is not available for this record.");
+}
+
+export async function performPracticeAction(code: string, token: string, requestId: string, runId: string,
+  itemKey: string, action: PracticeAction, onBehalfOf?: Role) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume this idea before acting.");
+    const item = (await rows<PracticeRow>(tx, `SELECT item_key, owner_role, counterparty_role, title, detail, status
+      FROM practice_items WHERE run_id=$1 AND item_key=$2 FOR UPDATE`, [run.id, itemKey]))[0];
+    if (!item) throw new DomainError("ITEM_NOT_FOUND", "This practice record is not in the current run.", 404);
+    if (session.kind === "participant" && onBehalfOf)
+      throw new DomainError("PRESENTER_ONLY", "Only an admin may act for another desk.", 403);
+    const actorRole = session.kind === "presenter" ? onBehalfOf : session.role;
+    if (!actorRole || (actorRole !== item.owner_role && actorRole !== item.counterparty_role))
+      throw new DomainError("WRONG_ROLE", "This practice record belongs to another desk.", 403);
+    const isOwner = actorRole === item.owner_role;
+    const nextStatus = nextPracticeStatus(item.status, action, isOwner);
+    await rows(tx, "UPDATE practice_items SET status=$3, updated_at=now() WHERE run_id=$1 AND item_key=$2",
+      [run.id, itemKey, nextStatus]);
+    const recipient = isOwner ? item.counterparty_role : item.owner_role;
+    const label = `${roleTitle(room.active_idea, actorRole)} ${action.replaceAll("_", " ")} on ${item.title}. Practice only; main scenario unchanged.`;
+    const event = await appendEvent(tx, room, run, state, { type: `practice_${action}`,
+      actor: session.kind === "presenter" ? "presenter" : actorRole,
+      onBehalfOf: session.kind === "presenter" ? actorRole : null,
+      label, reference: item.item_key,
+      route: { source: actorRole, target: recipient, kind: "instruction" } });
+    return { eventId: event.id, message: label };
+  });
+}
+
+export async function controlRoom(code: string, token: string, requestId: string, runId: string,
+  control: ControlType, mode?: Mode, targetIdea?: IdeaKey) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
     if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only the presenter can use this control.", 403);
+    if (control === "switch_idea") {
+      if (!targetIdea || ![1, 2, 3, 4].includes(targetIdea)) throw new DomainError("BAD_IDEA", "Choose Idea 1, 2, 3, or 4.", 400);
+      if (room.active_idea === targetIdea) throw new DomainError("IDEA_SELECTED", "That idea is already on screen.");
+      const label = `Presenter switched from ${IDEA_TITLES[room.active_idea]} to ${IDEA_TITLES[targetIdea]}.`;
+      const event = await appendEvent(tx, room, run, state, { type: "idea_switched", actor: "presenter", label });
+      const existing = (await rows<{ id: string; run_status: RoomStatus }>(tx,
+        "SELECT id, run_status FROM runs WHERE room_id=$1 AND idea_key=$2 ORDER BY run_number DESC LIMIT 1", [room.id, targetIdea]))[0];
+      let targetRunId = existing?.id;
+      let targetStatus = existing?.run_status ?? "lobby";
+      if (!targetRunId) {
+        const nextNumber = (await rows<{ next_number: number }>(tx,
+          "SELECT COALESCE(MAX(run_number),0)+1 AS next_number FROM runs WHERE room_id=$1", [room.id]))[0].next_number;
+        targetRunId = await insertRun(tx, room.id, Number(nextNumber), targetIdea, "lobby");
+        targetStatus = "lobby";
+      }
+      await rows(tx, "UPDATE rooms SET active_idea=$2, active_run_id=$3, status=$4 WHERE id=$1",
+        [room.id, targetIdea, targetRunId, targetStatus]);
+      return { eventId: event.id, runId: targetRunId, message: label };
+    }
     let label = "";
     let nextRunId: string | undefined;
     if (control === "start") {
       if (room.status !== "lobby") throw new DomainError("WRONG_STATUS", "The scenario has already started.");
       await rows(tx, "UPDATE rooms SET status='active' WHERE id=$1", [room.id]);
-      label = "Presenter started the Friday scenario.";
+      await rows(tx, "UPDATE runs SET run_status='active' WHERE id=$1", [run.id]);
+      label = `Presenter started ${IDEA_TITLES[room.active_idea]}.`;
     } else if (control === "pause") {
       if (room.status !== "active") throw new DomainError("WRONG_STATUS", "Only an active scenario can be paused.");
       await rows(tx, "UPDATE rooms SET status='paused' WHERE id=$1", [room.id]);
+      await rows(tx, "UPDATE runs SET run_status='paused' WHERE id=$1", [run.id]);
       label = "Presenter paused the scenario.";
     } else if (control === "resume") {
       if (room.status !== "paused") throw new DomainError("WRONG_STATUS", "The scenario is not paused.");
       await rows(tx, "UPDATE rooms SET status='active' WHERE id=$1", [room.id]);
+      await rows(tx, "UPDATE runs SET run_status='active' WHERE id=$1", [run.id]);
       label = "Presenter resumed the scenario.";
     } else if (control === "end") {
       await rows(tx, "UPDATE rooms SET status='ended' WHERE id=$1", [room.id]);
-      await rows(tx, "UPDATE runs SET ended_at=now() WHERE id=$1 AND ended_at IS NULL", [run.id]);
+      await rows(tx, "UPDATE runs SET ended_at=COALESCE(ended_at,now()), run_status='ended' WHERE id=$1", [run.id]);
       label = "Presenter ended this run. The demo room remains open.";
     } else if (control === "set_mode") {
       if (mode !== "conventional" && mode !== "ledger") throw new DomainError("BAD_MODE", "Choose a valid comparison mode.", 400);
       await rows(tx, "UPDATE rooms SET mode=$2 WHERE id=$1", [room.id, mode]);
       label = mode === "ledger" ? "Presenter revealed the simulated shared workflow ledger." : "Presenter selected separate records and reconciliation.";
     } else if (control === "delay_bank") {
+      if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "Bank-delay controls belong to Idea 1.", 409);
       if (state.step !== 3) throw new DomainError("WRONG_STEP", "Delay bank confirmation after fund processing and before bank receipt.");
       state = { ...state, bankDelayed: true };
       await saveState(tx, run, state);
       label = `Bank confirmation delayed. ${formatMoney(state.balances.redemption)} remains pending until the bank confirms receipt.`;
     } else if (control === "release_bank") {
+      if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "Bank-delay controls belong to Idea 1.", 409);
       if (!state.bankDelayed) throw new DomainError("NOT_DELAYED", "Bank confirmation is not delayed.");
       state = { ...state, bankDelayed: false };
       await saveState(tx, run, state);
       label = "Bank confirmation is available again.";
     } else if (control === "repeat_bank") {
+      if (room.active_idea !== 1) throw new DomainError("WRONG_IDEA", "Bank-notice controls belong to Idea 1.", 409);
       if (state.step < 4) throw new DomainError("NO_BANK_REFERENCE", "Confirm the incoming cash before repeating its notice.");
       label = "Duplicate bank notice received. The original reference was already applied. Cash did not change.";
     } else if (control === "reset") {
-      await rows(tx, "UPDATE runs SET ended_at=now() WHERE id=$1 AND ended_at IS NULL", [run.id]);
+      await rows(tx, "UPDATE runs SET ended_at=COALESCE(ended_at,now()), run_status='ended' WHERE id=$1", [run.id]);
       label = "Presenter restarted the scenario. Previous events remain available for replay.";
     } else throw new DomainError("BAD_CONTROL", "Unknown presenter control.", 400);
     const event = await appendEvent(tx, room, run, state, { type: control, actor: "presenter", label,
       reference: control === "repeat_bank" ? `DEMO-BANK-${room.code.trim()}-R${run.run_number}` : null });
     if (control === "reset") {
-      nextRunId = await insertRun(tx, room.id, Number(run.run_number) + 1);
+      const nextNumber = (await rows<{ next_number: number }>(tx,
+        "SELECT COALESCE(MAX(run_number),0)+1 AS next_number FROM runs WHERE room_id=$1", [room.id]))[0].next_number;
+      nextRunId = await insertRun(tx, room.id, Number(nextNumber), room.active_idea, "active");
       await rows(tx, "UPDATE rooms SET active_run_id=$2, status='active' WHERE id=$1", [room.id, nextRunId]);
     }
     return { eventId: event.id, runId: nextRunId, message: label };
@@ -648,9 +826,18 @@ export async function getRunReplay(code: string, token: string, runId: string) {
   const wireEvents = events.map(eventWire);
   const queue = await queueRows(sql, runId);
   const cases = await caseRows(sql, runId);
+  const practice = await practiceRows(sql, runId);
+  if (Number(run.idea_key) !== 1) {
+    const ideaKey = Number(run.idea_key) as IdeaKey;
+    return { runId, runNumber: Number(run.run_number), ideaKey, scenario: IDEA_TITLES[ideaKey],
+      opening: getIdeaSpec(ideaKey)?.initialState() ?? {}, events: wireEvents, mockItems: [], cases: [],
+      practiceItems: practice.map(item => ({ itemKey: item.item_key, ownerRole: item.owner_role,
+        counterpartyRole: item.counterparty_role, title: item.title, detail: item.detail, status: item.status })),
+      closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { workflow?: unknown }).workflow ?? run.workflow_state : run.workflow_state };
+  }
   const opening = serializeBalances(openingBalances(Number(run.scenario_version) === 2 ? 2 : 1));
-  return { runId, runNumber: Number(run.run_number), scenarioVersion: Number(run.scenario_version), opening,
-    events: wireEvents, mockItems: wireQueue(queue), cases: cases.map(wireCase),
+  return { runId, runNumber: Number(run.run_number), ideaKey: 1, scenarioVersion: Number(run.scenario_version), opening,
+    events: wireEvents, mockItems: wireQueue(queue), cases: cases.map(wireCase), practiceItems: practice,
     closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : opening };
 }
 

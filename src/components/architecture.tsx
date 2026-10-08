@@ -3,7 +3,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, Check, Clock3, Link2, Radio, Users } 
 import { formatMoney, type Role } from "@/lib/domain";
 import type { Snapshot, WireEvent } from "@/lib/store";
 
-type Party = Role | "holders";
+type Party = "issuer" | "fund" | "bank" | "holders";
 type Flow = { source: Party; target: Party; cash: boolean; label: string };
 const names: Record<Party, string> = {
   issuer: "Issuer Treasury", fund: "Fund Operations", bank: "Banking Operations", holders: "Token holders",
@@ -100,7 +100,7 @@ export function Architecture({ snapshot: s, animatedEvent }: { snapshot: Snapsho
     <div className="flex flex-wrap gap-2 text-xs text-muted-foreground"><span>{s.presence.admins} {s.presence.admins === 1 ? "admin" : "admins"} online</span><span>·</span><span>{waiting.length} choosing a role</span>{waiting.map(device => <span key={device.id} className="rounded-full bg-secondary px-2 py-1 font-mono">{device.label}</span>)}</div>
     {s.mode === "conventional" ? <div className="border-t border-border pt-5" data-testid="conventional-records">
       <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">Separate records · reconciliation view</h3><span className="text-xs text-muted-foreground">Illustrative party projections, not separate databases</span></div>
-      <div className="mt-3 grid gap-2 md:grid-cols-3">{(["issuer", "fund", "bank"] as Role[]).map(role => {
+      <div className="mt-3 grid gap-2 md:grid-cols-3">{(["issuer", "fund", "bank"] as const).map(role => {
         const last = latestFor(s.events, role);
         return <div key={role} className="min-w-0 rounded-lg border border-border bg-background p-3"><p className="text-xs font-semibold">{names[role]} record</p><p className="mt-2 line-clamp-2 min-h-10 text-xs leading-5 text-muted-foreground">{last?.label ?? "No accepted action yet."}</p><p className="mt-2 font-mono text-[11px] text-muted-foreground">{last ? `Event ${last.index}` : "Awaiting record"}</p></div>;
       })}</div>

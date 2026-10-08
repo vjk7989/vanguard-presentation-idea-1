@@ -128,7 +128,7 @@ test("separate browser profiles can choose separate roles in the shared room", a
       await page.goto(`/join/${CODE}`);
       await expect(page.getByRole("heading", { name: "Choose your workspace" })).toBeVisible();
       const role = (Object.keys(roles) as RoleName[])[index];
-      await page.getByRole("button", { name: new RegExp(role === "issuer" ? "Issuer treasury" : role === "fund" ? "Fund operations" : "Bank operations", "i") }).click();
+      await page.getByRole("button", { name: new RegExp(role === "issuer" ? "Issuer treasury" : role === "fund" ? "Fund operations" : "Bank Payments Officer", "i") }).click();
       await expect(page).toHaveURL(`/room/${CODE}`);
       await expect(page.getByRole("heading", { level: 1, name: roles[role].overview })).toBeVisible();
     }
@@ -171,7 +171,7 @@ test("a role can be changed from a secondary view", async ({ page }) => {
   await page.goto(`/room/${CODE}/work`);
   await page.getByRole("button", { name: "Change role" }).click();
   await expect(page).toHaveURL(`/join/${CODE}`);
-  await page.getByRole("button", { name: /Bank operations/i }).click();
+  await page.getByRole("button", { name: /Bank Payments Officer/i }).click();
   await expect(page).toHaveURL(`/room/${CODE}`);
   await expect(page.getByRole("heading", { level: 1, name: roles.bank.overview })).toBeVisible();
 });

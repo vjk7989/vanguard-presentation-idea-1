@@ -9,7 +9,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "lint": "eslint src tests",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "vitest run tests/unit",
+    "test": "vitest run tests/unit tests/idea2.test.ts tests/idea3.test.ts tests/idea4.test.ts",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
     "graft:check": "graft check"

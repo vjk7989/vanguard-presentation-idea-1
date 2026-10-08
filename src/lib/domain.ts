@@ -1,5 +1,6 @@
 export const ROLES = ["issuer", "fund", "bank"] as const;
-export type Role = (typeof ROLES)[number];
+export type Role = (typeof ROLES)[number] | "portfolio" | "lending" | "broker_a" | "broker_b" | "custody"
+  | "hedge" | "dealer" | "paying_bank" | "accounting" | "pension" | "tax_compliance" | "depositary";
 export type Mode = "conventional" | "ledger";
 export type RoomStatus = "lobby" | "active" | "paused" | "ended";
 export type ScenarioVersion = 1 | 2;
@@ -12,7 +13,7 @@ export type ActionType =
   | "confirm_payouts";
 export type ControlType =
   | "start" | "pause" | "resume" | "reset" | "end"
-  | "set_mode" | "delay_bank" | "release_bank" | "repeat_bank";
+  | "set_mode" | "delay_bank" | "release_bank" | "repeat_bank" | "switch_idea";
 export type ActionDefinition = { type: ActionType; role: Role; label: string; result: string };
 
 export type MoneyString = string;

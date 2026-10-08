@@ -76,7 +76,7 @@ test("participant can claim an available role from a join link", async ({ page }
   await page.goto(`/join/${CODE}`);
   await expect(page.getByRole("heading", { name: "Choose your workspace" })).toBeVisible();
   await page.screenshot({ path: "docs/screenshots/join-360.png", fullPage: true });
-  await page.getByRole("button", { name: /Fund operations/ }).click();
+  await page.getByRole("button", { name: /Fund Operations/i }).click();
   await expect(page).toHaveURL(`/room/${CODE}`);
   await expect(page.getByRole("heading", { name: "Redemptions & settlement" })).toBeVisible();
 });
@@ -92,7 +92,7 @@ test("scanning a join link registers a new device without an extra join button",
   await page.route(`**/api/rooms/${CODE}/join`, route => { joined = true; joinCount++; return route.fulfill({ json: { code: CODE, runId: data.runId } }); });
   await page.goto(`/join/${CODE}`);
   await expect(page.getByRole("heading", { name: "Choose your workspace" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Fund operations/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Fund Operations/i })).toBeVisible();
   expect(joinCount).toBe(1);
   await expect(page.getByRole("button", { name: "Join room" })).toHaveCount(0);
 });
@@ -105,7 +105,7 @@ test("a participant can release a role and choose another", async ({ page }) => 
   await page.goto(`/room/${CODE}`);
   await page.getByRole("button", { name: "Change role" }).click();
   await expect(page).toHaveURL(`/join/${CODE}`);
-  await page.getByRole("button", { name: /Bank operations/ }).click();
+  await page.getByRole("button", { name: /Bank Payments Officer/i }).click();
   await expect(page).toHaveURL(`/room/${CODE}`);
   await expect(page.getByRole("heading", { name: "Payments & confirmations" })).toBeVisible();
 });

@@ -6,7 +6,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { formatMoney, type Role } from "@/lib/domain";
 import { nextCaseRole, type CasePreset, type DemoCase } from "@/lib/demo-cases";
 
-const roleNames: Record<Role, string> = { issuer: "Issuer Treasury", fund: "Fund Operations", bank: "Banking Operations" };
+const roleNames: Partial<Record<Role, string>> = { issuer: "Issuer Treasury", fund: "Vanguard Fund Operations", bank: "Bank Payments" };
 const stageCopy: Record<DemoCase["status"], string> = {
   opened: "Issuer sent request · Fund review pending",
   fund_reviewed: "Fund reviewed request · Bank response pending",

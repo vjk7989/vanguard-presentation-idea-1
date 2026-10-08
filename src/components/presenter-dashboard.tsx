@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import * as Switch from "@radix-ui/react-switch";
-import { ArrowRight, Copy, ExternalLink, Pause, Play, QrCode, RotateCcw, Wifi, WifiOff } from "lucide-react";
+import { ArrowRight, Copy, ExternalLink, MoreHorizontal, Pause, Play, QrCode, RotateCcw, Wifi, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Architecture } from "@/components/architecture";
@@ -12,8 +12,10 @@ import { formatMoney, type Role } from "@/lib/domain";
 import { nextCaseRole, type CasePreset, type DemoCase } from "@/lib/demo-cases";
 import type { Snapshot, WireEvent } from "@/lib/store";
 import { useRoom } from "@/hooks/use-room";
+import { IDEA_TITLES } from "@/lib/ideas";
+import { ScenarioPresenter } from "@/components/ideas/scenario-presenter";
 
-const names: Record<Role, string> = { issuer: "Issuer Treasury", fund: "Fund Operations", bank: "Banking Operations" };
+const names: Partial<Record<Role, string>> = { issuer: "Issuer Treasury", fund: "Vanguard Fund Operations", bank: "Bank Payments" };
 const caseStatus: Record<DemoCase["status"], string> = {
   opened: "Waiting for Fund", fund_reviewed: "Waiting for Bank", bank_acknowledged: "Bank acknowledged",
 };
@@ -103,9 +105,24 @@ export function PresenterDashboard({ code }: { code: string }) {
   async function advance(item: DemoCase) { const role = nextCaseRole(item.status); if (!role) return; try { const result = await post<{ message?: string }>(`cases/${item.id}/actions`, { action: role === "fund" ? "fund_review" : "bank_acknowledge", onBehalfOf: role }); setNotice(result.message ?? "Practice case updated."); } catch {} }
 
   if (!s) return <div className="min-h-screen bg-background p-6 text-foreground"><div className="mx-auto max-w-6xl"><div className="h-10 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-5 text-destructive">{error}</p>}</div></div>;
+  if (s.ideaKey !== 1) return <ScenarioPresenter code={code} snapshot={s} connected={connected} busy={busy}
+    error={error} animatedEvent={animatedEvent} post={post} />;
   return <div className="flex min-h-screen flex-col bg-background text-foreground"><a href="#presenter-main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-3">Skip to main content</a>
     <header className="border-b border-border bg-card"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8"><div className="flex items-center gap-5"><div className="text-sm font-bold tracking-tight">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><span className="hidden font-mono text-xs text-muted-foreground sm:inline">{s.code} · RUN {s.runNumber}</span></div><div className="flex items-center gap-3"><span className={`inline-flex items-center gap-1 text-xs ${connected ? "text-foreground" : "text-destructive"}`}>{connected ? <Wifi size={15} aria-hidden="true" /> : <WifiOff size={15} aria-hidden="true" />}{connected ? "Connected" : "Offline"}</span><ThemeToggle /></div></div></header>
     <main id="presenter-main" className="mx-auto w-full max-w-[1440px] flex-1 space-y-5 px-4 py-5 sm:px-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-2 text-sm">
+        <span className="font-semibold">Idea 1 of 4 · {IDEA_TITLES[1]}</span>
+        <div className="flex items-center gap-2">
+          {(s.state.step >= 6 || s.status === "ended") && <Button size="sm" onClick={() => control("switch_idea", { ideaKey: 2 })} disabled={disabled}>Next idea <ArrowRight size={15} aria-hidden="true" /></Button>}
+          <details className="relative"><summary aria-label="Choose another idea" className="flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center rounded-md border border-border hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"><MoreHorizontal size={20} aria-hidden="true" /></summary>
+            <div className="absolute right-0 z-30 mt-2 w-64 rounded-lg border border-border bg-popover p-2 shadow-lg">
+              <p className="px-3 py-2 text-xs text-muted-foreground">Switch the room for everyone</p>
+              {([1, 2, 3, 4] as const).map(ideaKey => <button key={ideaKey} type="button" disabled={disabled || ideaKey === s.ideaKey}
+                onClick={() => control("switch_idea", { ideaKey })} className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm hover:bg-muted disabled:opacity-50">Idea {ideaKey} · {IDEA_TITLES[ideaKey]}</button>)}
+            </div>
+          </details>
+        </div>
+      </div>
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-muted-foreground">Friday customer redemptions · {s.scenarioVersion === 2 ? "Deck-aligned" : "Original"} run {s.runNumber}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Operations control room</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">Guide Issuer, Fund and Bank through one real scenario path, then reveal what a shared workflow record changes.</p></div><div className="flex w-full flex-wrap gap-2 sm:w-auto"><Button variant="secondary" onClick={() => setShowQr(value => !value)} aria-expanded={showQr}><QrCode size={16} aria-hidden="true" /> {showQr ? "Hide QR" : "Show QR"}</Button>{s.status === "lobby" ? <Button onClick={() => control("start")} disabled={disabled}>Start scenario <ArrowRight size={16} aria-hidden="true" /></Button> : <>{s.status === "active" ? <Button variant="secondary" onClick={() => control("pause")} disabled={disabled}><Pause size={16} aria-hidden="true" /> Pause</Button> : s.status === "paused" ? <Button onClick={() => control("resume")} disabled={disabled}><Play size={16} aria-hidden="true" /> Resume</Button> : null}<Button variant="secondary" onClick={() => control("reset")} disabled={disabled}><RotateCcw size={16} aria-hidden="true" /> Restart</Button><Button variant="danger" onClick={() => control("end")} disabled={disabled || s.status === "ended"}>End run</Button></>}</div></div>
       {error && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">{error}{!connected && " Actions are disabled until the connection returns."}</p>}
       {notice && <p role="status" className="rounded-lg bg-secondary p-3 text-sm">{notice}</p>}

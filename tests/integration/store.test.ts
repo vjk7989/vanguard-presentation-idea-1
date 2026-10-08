@@ -280,6 +280,51 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     await expect(store.joinRoom(created.code, `late-${randomUUID()}`, created.runId)).rejects.toThrow("old run");
   });
 
+  it("switches ideas without losing sessions, role claims, or prior-run replay", async () => {
+    const presenter = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(presenter, randomUUID());
+    createdCodes.push(created.code);
+    const first = `participant-${randomUUID()}`;
+    const second = `participant-${randomUUID()}`;
+    await store.joinRoom(created.code, first, created.runId);
+    await store.claimRole(created.code, first, randomUUID(), created.runId, "issuer");
+    const switched = await store.controlRoom(created.code, presenter, randomUUID(), created.runId, "switch_idea", undefined, 2);
+    expect(switched.runId).not.toBe(created.runId);
+    let room = await store.getSnapshot(created.code, presenter);
+    expect(room.ideaKey).toBe(2);
+    expect(room.roles).toHaveLength(5);
+    await store.joinRoom(created.code, second, switched.runId);
+    const claims = await Promise.allSettled([
+      store.claimRole(created.code, first, randomUUID(), switched.runId, "portfolio"),
+      store.claimRole(created.code, second, randomUUID(), switched.runId, "portfolio"),
+    ]);
+    expect(claims.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const portfolioToken = claims[0].status === "fulfilled" ? first : second;
+    await store.controlRoom(created.code, presenter, randomUUID(), switched.runId, "start");
+    room = await store.getSnapshot(created.code, presenter);
+    const beforeFinancial = await dbModule.db().unsafe("SELECT * FROM financial_states WHERE run_id=$1", [switched.runId]);
+    const item = room.practiceItems.find(record => record.ownerRole === "portfolio");
+    expect(item).toBeTruthy();
+    const requestId = randomUUID();
+    const practice = await store.performPracticeAction(created.code, portfolioToken, requestId, switched.runId, item!.itemKey, "acknowledge");
+    expect(await store.performPracticeAction(created.code, portfolioToken, requestId, switched.runId, item!.itemKey, "acknowledge")).toEqual(practice);
+    room = await store.getSnapshot(created.code, presenter);
+    expect(room.practiceItems.find(record => record.itemKey === item!.itemKey)?.status).toBe("acknowledged");
+    expect(await dbModule.db().unsafe("SELECT * FROM financial_states WHERE run_id=$1", [switched.runId])).toEqual(beforeFinancial);
+    const guided = room.ideaActions.find(action => action.role === "portfolio");
+    expect(guided).toBeTruthy();
+    await store.performIdeaAction(created.code, portfolioToken, randomUUID(), switched.runId, guided!.id);
+    const ideaTwoReplay = await store.getRunReplay(created.code, presenter, switched.runId);
+    expect(ideaTwoReplay.events.some(event => event.type === guided!.id)).toBe(true);
+    expect(ideaTwoReplay.events.every(event => typeof event.hash === "string" && event.stateAfter)).toBe(true);
+    const back = await store.controlRoom(created.code, presenter, randomUUID(), switched.runId, "switch_idea", undefined, 1);
+    expect(back.runId).toBe(created.runId);
+    room = await store.getSnapshot(created.code, first);
+    expect(room.session.role).toBe("issuer");
+    expect(room.roles.find(role => role.role === "issuer")?.claimed).toBe(true);
+    await expect(store.performIdeaAction(created.code, portfolioToken, randomUUID(), switched.runId, guided!.id)).rejects.toThrow("earlier run");
+  });
+
   it("rolls back failed actions and cascades expired rooms", async () => {
     const presenter = `presenter-${randomUUID()}`;
     const created = await store.createRoom(presenter, randomUUID());
