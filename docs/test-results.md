@@ -12,7 +12,8 @@ Verified on 2026-10-09 against a local production server and intercepted API fix
 | Graft drift | Pass after rebuilding the ignored local wiring graph |
 | Supabase migration | Pass — `005_multi_idea.sql` applied to the dedicated `reserve-operations-lab` project; old 17 events remained untouched, and the live room stayed on Idea 1 |
 | Database-backed integration | Pass — 11 tests on the isolated local PostgreSQL 17 cluster, including concurrent Idea 2 role claims, idea switching and restoration, retry-safe practice actions, financial isolation, stale-run rejection, prior-run replay, and existing transaction checks. The cluster was stopped after verification. |
-| Live deployment / physical device | Pending at this checkpoint; see release handoff for the final smoke result. No physical Chrome phone was available in the workspace. |
+| Canonical Vercel smoke | Pass — commit `dd749bf` served the new `ideaKey` preview and routes. Independent admin and participant HTTP sessions worked; the admin switched to Idea 2 (five roles, ten practice records) and back to the same Idea 1 run. A participant joined, appeared as waiting, was kicked, then received 401. |
+| Physical Chrome device / latency p95 | Unverified — no external phone was connected, and a statistically meaningful warm action-to-projector p95 was not measured on the live deployment. |
 
 Representative new phone and desktop captures are `docs/screenshots/idea-{2,3,4}-role-{360,1366}.png`. Browser tests used the installed Chrome channel and an intercepted API fixture; they do not establish live database performance or the two-second p95 target.
 
