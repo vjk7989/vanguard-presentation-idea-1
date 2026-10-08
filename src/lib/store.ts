@@ -28,7 +28,7 @@ type QueueRow = { item_key: string; role: Role; status: MockStatus };
 type PresenceRow = { id: string; kind: "presenter" | "participant"; role: Role | null; last_seen_at: string };
 type RunSummaryRow = { id: string; run_number: number; created_at: string; ended_at: string | null };
 type SnapshotReadRow = RunRow & BalanceRow & Pick<RoomRow, "code" | "status" | "mode" | "revision"> & {
-  session_kind: SessionRow["kind"]; session_role: Role | null;
+  session_kind: SessionRow["kind"] | null; session_role: Role | null;
   sessions: PresenceRow[]; queue: QueueRow[]; events: EventRow[]; runs: RunSummaryRow[];
 };
 
@@ -248,9 +248,8 @@ async function ensureDemoRoom() {
 }
 
 export async function joinRoom(code: string, token: string, runId: string, previousToken?: string) {
-  if (code.toUpperCase() === DEMO_ROOM_CODE) await ensureDemoRoom();
   const sql = db();
-  return sql.begin(async tx => {
+  const joinExistingRoom = () => sql.begin(async tx => {
     const room = await roomByCode(tx, code, true);
     const previous = previousToken ? await rows<{ kind: "presenter" | "participant" }>(tx,
       "SELECT kind FROM sessions WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(previousToken)]) : [];
@@ -268,15 +267,28 @@ export async function joinRoom(code: string, token: string, runId: string, previ
       [randomUUID(), room.id, tokenHash(token), runId]);
     return { code: room.code.trim(), runId: room.active_run_id, reused: false };
   });
+  try { return await joinExistingRoom(); }
+  catch (error) {
+    if (code.toUpperCase() !== DEMO_ROOM_CODE || !(error instanceof DomainError) || error.code !== "ROOM_NOT_FOUND") throw error;
+    await ensureDemoRoom();
+    return joinExistingRoom();
+  }
 }
 
 export async function roomPreview(code: string) {
-  if (code.toUpperCase() === DEMO_ROOM_CODE) await ensureDemoRoom();
-  const sql = db();
-  const room = await roomByCode(sql, code);
-  const claims = await rows<{ role: Role }>(sql, "SELECT role FROM role_claims WHERE room_id=$1", [room.id]);
+  const room = (await rows<Pick<RoomRow, "code" | "active_run_id" | "status" | "expires_at"> & { claimed_roles: Role[] }>(db(),
+    `SELECT room.code, room.active_run_id, room.status, room.expires_at,
+      (SELECT COALESCE(json_agg(role), '[]'::json) FROM role_claims WHERE room_id=room.id) AS claimed_roles
+      FROM rooms room WHERE room.code=$1`, [code.toUpperCase()]))[0];
+  const expiresAt = room ? new Date(room.expires_at).getTime() : 0;
+  if (code.toUpperCase() === DEMO_ROOM_CODE && expiresAt <= Date.now() + 365 * 24 * 60 * 60 * 1000) {
+    await ensureDemoRoom();
+    return roomPreview(code);
+  }
+  if (!room || expiresAt <= Date.now()) throw new DomainError("ROOM_NOT_FOUND", "This room has expired or does not exist.", 404);
+  const claimed = jsonArray<Role>(room.claimed_roles);
   return { code: room.code.trim(), runId: room.active_run_id, status: room.status,
-    roles: ROLES.map(role => ({ role, claimed: claims.some(c => c.role === role) })) };
+    roles: ROLES.map(role => ({ role, claimed: claimed.includes(role) })) };
 }
 
 export async function getSnapshot(code: string, token: string): Promise<Snapshot> {
@@ -313,15 +325,15 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
         'created_at', created_at, 'ended_at', ended_at) ORDER BY run_number DESC), '[]'::json)
         FROM runs WHERE room_id=room.id) AS runs
     FROM target_room room
-    JOIN heartbeat ON true
+    LEFT JOIN heartbeat ON true
     JOIN runs run ON run.id=room.active_run_id
     JOIN financial_states financial ON financial.run_id=run.id`, [code.toUpperCase(), tokenHash(token)]);
   const row = result[0];
   if (!row) {
-    const room = await roomByCode(db(), code);
-    await sessionFor(db(), room.id, token);
+    await roomByCode(db(), code);
     throw new DomainError("RUN_NOT_FOUND", "This run is unavailable.", 404);
   }
+  if (!row.session_kind) throw new DomainError("NO_SESSION", "Join this room to continue.", 401);
   const state = stateFrom(row, row);
   const sessions = jsonArray<PresenceRow>(row.sessions);
   const queue = jsonArray<QueueRow>(row.queue);
