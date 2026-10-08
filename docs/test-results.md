@@ -14,7 +14,8 @@ This document records verified checks from the shared-room change. Fixture brows
 | Concurrent claims, singleton room, Kick/Rejoin, idempotency, rollback, and cleanup | Pass — 5 integration tests on a new disposable local PostgreSQL 17 database, removed after testing |
 | Live Supabase API smoke test | Pass — same `DEMO01` run, presenter open, participant join/claim, kick invalidates old session (HTTP 401), rejoin succeeds; test role freed afterward |
 | Canonical Vercel production API smoke test | Pass — public room open, join/claim, Kick returns HTTP 401 to old session, rejoin/claim, and test role cleanup |
-| Legacy `-ze6x` link and four-device test | Legacy redirect pending deployment; four-device test pending |
+| Legacy `-ze6x` link | Pass — HTTP 307 to the canonical production URL at `/` and `/join/DEMO01?from=qr`, preserving the path and query |
+| Four-device browser test | Pending |
 
 Screenshots are saved in `docs/screenshots/` after the Playwright fixture suite runs.
 
