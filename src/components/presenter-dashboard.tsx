@@ -18,10 +18,11 @@ export function PresenterDashboard({ code }: { code: string }) {
   const room = useRoom(code);
   const { snapshot: s, connected, busy, error, animatedEvent, post } = room;
   const [selected, setSelected] = useState<WireEvent | null>(null);
-  const [joinUrl, setJoinUrl] = useState("");
+  const [localJoinUrl, setLocalJoinUrl] = useState("");
   const [showQr, setShowQr] = useState(false);
   const [notice, setNotice] = useState("");
-  useEffect(() => { queueMicrotask(() => setJoinUrl(`${location.origin}/join/${code}`)); }, [code]);
+  useEffect(() => { queueMicrotask(() => setLocalJoinUrl(`${location.origin}/join/${code}`)); }, [code]);
+  const joinUrl = s?.joinUrl ?? localJoinUrl;
   async function control(name: string, extra: object = {}) { try { await post("controls", { control: name, ...extra }); } catch {} }
   async function takeover() {
     if (!s?.next) return;
@@ -39,7 +40,7 @@ export function PresenterDashboard({ code }: { code: string }) {
   const actionsDisabled = !connected || busy;
   const join = <div className="rounded-xl border border-border bg-card p-5">
     <div className="flex items-start justify-between gap-3"><div><h2 className="font-semibold">Invite role devices</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">Show the QR when your participants are ready.</p></div><QrCode size={22} className="text-primary" /></div>
-    <Button className="mt-5 w-full" variant={showQr ? "secondary" : "primary"} onClick={() => setShowQr(value => !value)} aria-expanded={showQr} aria-controls="join-qr">{showQr ? "Hide QR" : "Show QR"}</Button>
+    <Button className="mt-5 w-full" onClick={() => setShowQr(value => !value)} aria-expanded={showQr} aria-controls="join-qr">{showQr ? "Hide QR" : "Show QR"}</Button>
     {showQr && <div id="join-qr" className="mt-5 flex flex-col items-center gap-3 border-t border-border pt-5 text-center">
       {joinUrl && <div className="rounded-lg bg-white p-3 text-black"><QRCodeSVG value={joinUrl} size={176} marginSize={2} bgColor="#ffffff" fgColor="#111111" aria-label="QR code to join this room" /></div>}
       <p className="font-mono text-sm">ROOM {s.code}</p>
@@ -53,7 +54,7 @@ export function PresenterDashboard({ code }: { code: string }) {
   const presence = <section className="rounded-xl border border-border bg-card p-5" aria-label="Connected devices">
     <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Devices in the room</h2><p className="mt-1 text-sm text-muted-foreground">Live presence updates every two seconds.</p></div><div className="font-mono text-2xl font-semibold">{s.presence.online} <span className="text-sm font-normal text-muted-foreground">online</span></div></div>
     <p className="mt-4 text-sm text-muted-foreground">{s.presence.admins} admin · {s.presence.waiting} choosing a role · {s.presence.assigned} in roles</p>
-    <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-h-14 items-center justify-between gap-3 border-b border-border py-2 text-sm"><div><span className="font-mono font-semibold">{device.label}</span><span className="ml-2 text-muted-foreground">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button size="sm" variant="ghost" disabled={actionsDisabled} onClick={() => kick(device.id)} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
+    <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-h-14 flex-col items-stretch gap-2 border-b border-border py-3 text-sm sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><span className="font-mono font-semibold">{device.label}</span><span className="block text-muted-foreground sm:ml-2 sm:inline">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button className="w-full sm:w-auto" size="sm" variant="ghost" disabled={actionsDisabled} onClick={() => kick(device.id)} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
   </section>;
   return <Shell>
     <header className="border-b border-border"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8">
@@ -63,11 +64,11 @@ export function PresenterDashboard({ code }: { code: string }) {
     <main className="mx-auto max-w-[1440px] px-5 py-5 sm:px-8">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
         <div><p className="text-sm text-muted-foreground">Friday customer redemptions · Run {s.runNumber}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Operations control room</h1></div>
-        <div className="flex flex-wrap items-center gap-2">
-          {s.status === "lobby" ? <Button onClick={() => control("start")} disabled={actionsDisabled}>Start scenario <ArrowRight size={16} /></Button> : <>
-            {s.status === "active" ? <Button variant="secondary" onClick={() => control("pause")} disabled={actionsDisabled}><Pause size={16} /> Pause</Button> : s.status === "paused" ? <Button onClick={() => control("resume")} disabled={actionsDisabled}><Play size={16} /> Resume</Button> : null}
-            <Button variant="secondary" onClick={() => control("reset")} disabled={actionsDisabled}><RotateCcw size={16} /> Restart</Button>
-            <Button variant="danger" onClick={() => control("end")} disabled={actionsDisabled || s.status === "ended"}>End run</Button>
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+          {s.status === "lobby" ? <Button className="col-span-2 w-full sm:w-auto" onClick={() => control("start")} disabled={actionsDisabled}>Start scenario <ArrowRight size={16} /></Button> : <>
+            {s.status === "active" ? <Button className="w-full sm:w-auto" variant="secondary" onClick={() => control("pause")} disabled={actionsDisabled}><Pause size={16} /> Pause</Button> : s.status === "paused" ? <Button className="w-full sm:w-auto" onClick={() => control("resume")} disabled={actionsDisabled}><Play size={16} /> Resume</Button> : null}
+            <Button className="w-full sm:w-auto" variant="secondary" onClick={() => control("reset")} disabled={actionsDisabled}><RotateCcw size={16} /> Restart</Button>
+            <Button className="col-span-2 w-full sm:w-auto" variant="danger" onClick={() => control("end")} disabled={actionsDisabled || s.status === "ended"}>End run</Button>
           </>}
         </div>
       </div>

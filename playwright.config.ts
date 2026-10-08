@@ -8,7 +8,7 @@ export default defineConfig({
   timeout: 30_000,
   retries: 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
-  use: { ...devices["Desktop Chrome"], channel: "chrome", baseURL, trace: "retain-on-failure" },
+  use: { ...devices["Desktop Chrome"], channel: "chrome", baseURL, trace: process.env.PLAYWRIGHT_TRACE === "off" ? "off" : "retain-on-failure" },
   webServer: externalBaseUrl ? undefined : {
     command: "pnpm dev --port 3100",
     url: baseURL,

@@ -7,6 +7,11 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest, context: { params: Promise<{ code: string }> }) {
   return respond(async () => {
     const { code } = await context.params;
-    return getSnapshot(code, getToken(req));
+    const snapshot = await getSnapshot(code, getToken(req));
+    if (snapshot.session.kind === "presenter") {
+      const origin = new URL(process.env.APP_ORIGIN ?? req.url).origin;
+      snapshot.joinUrl = new URL(`/join/${encodeURIComponent(snapshot.code)}`, origin).toString();
+    }
+    return snapshot;
   });
 }

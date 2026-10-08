@@ -63,6 +63,41 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     await expect(store.getSnapshot(created.code, b)).rejects.toThrow("Join this room");
   });
 
+  it("counts profiles as distinct devices, but repeat joins from one session only once", async () => {
+    const admin = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(admin, randomUUID());
+    createdCodes.push(created.code);
+    const issuer = `participant-${randomUUID()}`;
+    const fund = `participant-${randomUUID()}`;
+    const bank = `participant-${randomUUID()}`;
+    const first = await store.joinRoom(created.code, issuer, created.runId);
+    expect(await store.joinRoom(created.code, issuer, created.runId)).toEqual(first);
+    await Promise.all([store.joinRoom(created.code, fund, created.runId), store.joinRoom(created.code, bank, created.runId)]);
+    let room = await store.getSnapshot(created.code, admin);
+    expect(room.presence).toMatchObject({ admins: 1, participants: 3, waiting: 3, assigned: 0 });
+    expect(room.presence.devices).toHaveLength(3);
+    await Promise.all([
+      store.claimRole(created.code, issuer, randomUUID(), created.runId, "issuer"),
+      store.claimRole(created.code, fund, randomUUID(), created.runId, "fund"),
+      store.claimRole(created.code, bank, randomUUID(), created.runId, "bank"),
+    ]);
+    room = await store.getSnapshot(created.code, admin);
+    expect(room.presence).toMatchObject({ admins: 1, participants: 3, waiting: 0, assigned: 3 });
+    expect(room.roles.every(role => role.claimed && role.connected)).toBe(true);
+    expect((await store.getSnapshot(created.code, fund)).presence.devices).toEqual([]);
+
+    const staleSession = room.presence.devices.find(device => device.role === "bank")?.id;
+    expect(staleSession).toBeTruthy();
+    await dbModule.db().unsafe("UPDATE sessions SET last_seen_at=now() - interval '16 seconds' WHERE id=$1", [staleSession!]);
+    room = await store.getSnapshot(created.code, admin);
+    expect(room.presence).toMatchObject({ admins: 1, participants: 2, assigned: 2 });
+    expect(room.presence.devices.find(device => device.id === staleSession)).toMatchObject({ role: "bank", connected: false });
+    expect(room.roles.find(role => role.role === "bank")).toMatchObject({ claimed: true, connected: false });
+    await store.getSnapshot(created.code, bank);
+    room = await store.getSnapshot(created.code, admin);
+    expect(room.presence).toMatchObject({ participants: 3, assigned: 3 });
+  });
+
   it("persists fictional approvals without touching financial balances and resets them per run", async () => {
     const admin = `presenter-${randomUUID()}`;
     const created = await store.createRoom(admin, randomUUID());

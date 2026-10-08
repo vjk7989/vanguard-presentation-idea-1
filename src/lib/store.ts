@@ -40,6 +40,7 @@ export type WireEvent = {
 };
 export type Snapshot = {
   code: string; runId: string; runNumber: number; revision: number; status: RoomStatus; mode: Mode;
+  joinUrl?: string;
   scenario: "Friday customer redemptions";
   state: ReturnType<typeof toWireState>;
   next: (typeof ACTIONS)[number] | null;
@@ -227,17 +228,26 @@ async function ensureDemoRoom() {
   });
 }
 
-export async function joinRoom(code: string, token: string, runId: string) {
+export async function joinRoom(code: string, token: string, runId: string, previousToken?: string) {
   if (code.toUpperCase() === DEMO_ROOM_CODE) await ensureDemoRoom();
   const sql = db();
   return sql.begin(async tx => {
     const room = await roomByCode(tx, code, true);
+    const previous = previousToken ? await rows<{ kind: "presenter" | "participant" }>(tx,
+      "SELECT kind FROM sessions WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(previousToken)]) : [];
+    if (previous[0]?.kind === "presenter") {
+        throw new DomainError("ADMIN_SESSION", "This Chrome profile is already the admin. Open the QR link in another profile or device to choose a role.", 409);
+    }
     const existing = await rows<{ join_run_id: string | null }>(tx, "SELECT join_run_id FROM sessions WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(token)]);
-    if (existing[0]) return { code: room.code.trim(), runId: existing[0].join_run_id ?? room.active_run_id };
+    if (existing[0]) return { code: room.code.trim(), runId: existing[0].join_run_id ?? room.active_run_id, reused: previous[0]?.kind === "participant" };
     if (room.active_run_id !== runId) throw new DomainError("STALE_RUN", "This join link has an old run. Refresh the page.");
+    if (previous[0]?.kind === "participant" && previousToken) {
+      await rows(tx, "UPDATE sessions SET last_seen_at=now() WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(previousToken)]);
+      return { code: room.code.trim(), runId: room.active_run_id, reused: true };
+    }
     await rows(tx, "INSERT INTO sessions (id, room_id, token_hash, kind, join_run_id) VALUES ($1,$2,$3,'participant',$4)",
       [randomUUID(), room.id, tokenHash(token), runId]);
-    return { code: room.code.trim(), runId: room.active_run_id };
+    return { code: room.code.trim(), runId: room.active_run_id, reused: false };
   });
 }
 

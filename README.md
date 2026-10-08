@@ -9,17 +9,19 @@ A fictional, interactive demonstration of issuer reserve operations. Everyone us
 Requirements: Node.js 22, pnpm 9, and a PostgreSQL database for live multi-device use. Supabase Postgres is supported.
 
 1. Run `pnpm install` in this project. The project `.npmrc` keeps the pnpm store and npm cache here.
-2. Copy `.env.example` to `.env.local` and set `DATABASE_URL`, `SESSION_SECRET` (at least 32 characters), and `CRON_SECRET`. `APP_ORIGIN` is optional; same-origin browser requests work without it.
+2. Copy `.env.example` to `.env.local` and set `DATABASE_URL`, `SESSION_SECRET` (at least 32 characters), and `CRON_SECRET`. Set `APP_ORIGIN` to the public URL participants will open. If omitted in local development, the QR uses the current request origin.
 3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The ordered, idempotent migrations are in `db/`. On Supabase, use a dedicated project; the initial migration enables RLS on every app table, with no browser-facing policies. The app uses server-side Postgres connections and does not need a Supabase API key.
 4. Run `pnpm dev`. Open `http://localhost:3000` from the admin laptop. Entering the admin dashboard initializes the shared room automatically.
 
-For phones on a local network, use an HTTPS tunnel or host with a reachable origin. The QR code uses the browser's current origin. The secure session cookie is enabled automatically in production.
+For phones on a local network, use an HTTPS tunnel or host with a reachable origin and set `APP_ORIGIN` to it. A `localhost` QR code cannot be opened from a different device. The secure session cookie is enabled automatically in production.
 
 ## Live demo flow
 
 Choose **Enter admin dashboard** on the public homepage, then **Show QR**. Revealing the QR does not create a room or reset the run; it always points to `/join/DEMO01`. A scan connects the device automatically and opens the live role picker. The admin sees online counts and a roster, including devices still choosing a role. The admin can **Kick** any participant device, invalidating its session; that person can press **Rejoin** or rescan. Participants can use **Change role** to release their position and choose another available role.
 
-Each participant gets a distinct treasury, fund, or bank workspace. Every fictional background queue item opens a detail view; pending items can be approved or confirmed, and the result is shared across devices. Those items do **not** change reserve balances. Only the highlighted Friday-scenario action advances the six-step financial run. Start the scenario, follow that prompt, and use presenter takeover if a role is unoccupied. Comparison mode affects presentation only. Delay and duplicate-bank exceptions remain available. Restart starts a fresh background queue and financial run while retaining roles; earlier runs remain available for event-by-event replay.
+Each participant gets a distinct treasury, fund, or bank workspace with Overview (`/room/DEMO01`), Work (`/room/DEMO01/work`), and Activity (`/room/DEMO01/activity`) views. Desktop uses a navigation rail; phones use bottom navigation and touch-friendly record details. Every fictional background queue item opens a detail view; pending items can be approved or confirmed, and the result is shared across devices. Those items do **not** change reserve balances. Only the highlighted Friday-scenario action advances the six-step financial run. Start the scenario, follow that prompt, and use presenter takeover if a role is unoccupied. Comparison mode affects presentation only. Delay and duplicate-bank exceptions remain available. Restart starts a fresh background queue and financial run while retaining roles; earlier runs remain available for event-by-event replay.
+
+Chrome tabs in one profile share a session and role and count as one device. A separate Chrome profile or device gets its own session and can claim another available role. Opening the QR link in the admin's own Chrome profile keeps that profile as admin; use a separate profile or Incognito window to join as a participant.
 
 See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthroughs.md).
 
@@ -40,7 +42,7 @@ Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, a
 
 ## Vercel handoff
 
-Import this public repository into Vercel. Supply `DATABASE_URL`, `SESSION_SECRET`, and `CRON_SECRET` as environment variables. `APP_ORIGIN` is optional. For Supabase, copy the **Transaction pooler** URI from the project's Connect panel into Vercel's `DATABASE_URL`; replace its password placeholder with the private database password, percent-encoding special characters if necessary. The app's Postgres.js client already disables prepared statements as required by transaction pooling. Apply the ordered migrations before using the site. Keep the database URL server-only—never prefix it with `NEXT_PUBLIC_` or put it in Git. Redeploy after changing Vercel environment variables. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to a database during compilation.
+Import this public repository into Vercel. Supply `DATABASE_URL`, `SESSION_SECRET`, `CRON_SECRET`, and `APP_ORIGIN=https://vanguard-presentation-idea-1.vercel.app` as environment variables. The configured origin gives every admin a canonical cross-device QR link even when they opened a deployment alias. For Supabase, copy the **Transaction pooler** URI from the project's Connect panel into Vercel's `DATABASE_URL`; replace its password placeholder with the private database password, percent-encoding special characters if necessary. The app's Postgres.js client already disables prepared statements as required by transaction pooling. Apply the ordered migrations before using the site. Keep the database URL server-only—never prefix it with `NEXT_PUBLIC_` or put it in Git. Redeploy after changing Vercel environment variables. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to a database during compilation.
 
 This repository does not provision a database or include production credentials. The participant QR entry point is `/join/DEMO01` on the deployed origin.
 
