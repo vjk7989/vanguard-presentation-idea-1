@@ -98,6 +98,32 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     expect(room.presence).toMatchObject({ participants: 3, assigned: 3 });
   });
 
+  it("serves snapshots while a mutation holds the room row lock", async () => {
+    const presenter = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(presenter, randomUUID());
+    createdCodes.push(created.code);
+    let releaseLock!: () => void;
+    let signalLocked!: () => void;
+    const locked = new Promise<void>(resolve => { signalLocked = resolve; });
+    const hold = new Promise<void>(resolve => { releaseLock = resolve; });
+    const blocker = dbModule.db().begin(async tx => {
+      await tx.unsafe("SELECT id FROM rooms WHERE code=$1 FOR UPDATE", [created.code]);
+      signalLocked();
+      await hold;
+    });
+    try {
+      await locked;
+      const snapshot = await Promise.race([
+        store.getSnapshot(created.code, presenter),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Snapshot waited for the room lock")), 1000)),
+      ]);
+      expect(snapshot.code).toBe(created.code);
+    } finally {
+      releaseLock();
+      await blocker;
+    }
+  });
+
   it("persists fictional approvals without touching financial balances and resets them per run", async () => {
     const admin = `presenter-${randomUUID()}`;
     const created = await store.createRoom(admin, randomUUID());

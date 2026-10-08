@@ -26,11 +26,22 @@ type EventRow = { id: string; event_index: number; type: string; actor: string; 
 type RequestRow = { response_json: unknown };
 type QueueRow = { item_key: string; role: Role; status: MockStatus };
 type PresenceRow = { id: string; kind: "presenter" | "participant"; role: Role | null; last_seen_at: string };
+type RunSummaryRow = { id: string; run_number: number; created_at: string; ended_at: string | null };
+type SnapshotReadRow = RunRow & BalanceRow & Pick<RoomRow, "code" | "status" | "mode" | "revision"> & {
+  session_kind: SessionRow["kind"]; session_role: Role | null;
+  sessions: PresenceRow[]; queue: QueueRow[]; events: EventRow[]; runs: RunSummaryRow[];
+};
 
 function jsonObject<T>(value: unknown): T {
   const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected a JSON object from Postgres.");
   return parsed as T;
+}
+
+function jsonArray<T>(value: unknown): T[] {
+  const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+  if (!Array.isArray(parsed)) throw new Error("Expected a JSON array from Postgres.");
+  return parsed as T[];
 }
 
 export type WireEvent = {
@@ -214,6 +225,14 @@ export async function isDemoPresenterToken(token: string): Promise<boolean> {
 }
 
 async function ensureDemoRoom() {
+  // The shared room is normally already present. Avoid opening a write transaction
+  // for every QR preview and join after it has been initialized.
+  try {
+    const existing = await roomByCode(db(), DEMO_ROOM_CODE);
+    if (new Date(existing.expires_at).getTime() > Date.now() + 365 * 24 * 60 * 60 * 1000) return existing;
+  } catch (error) {
+    if (!(error instanceof DomainError) || error.code !== "ROOM_NOT_FOUND") throw error;
+  }
   return db().begin(async tx => {
     const id = randomUUID();
     const inserted = await rows<{ id: string }>(tx, `INSERT INTO rooms (id, code, status, mode, expires_at)
@@ -261,28 +280,62 @@ export async function roomPreview(code: string) {
 }
 
 export async function getSnapshot(code: string, token: string): Promise<Snapshot> {
-  return db().begin(async tx => {
-  const room = await roomByCode(tx, code, true);
-  const session = await sessionFor(tx, room.id, token);
-  await rows(tx, "UPDATE sessions SET last_seen_at = now() WHERE id = $1", [session.id]);
-  const { run, state } = await runAndState(tx, room.active_run_id);
-  const sessions = await rows<PresenceRow>(tx,
-    `SELECT s.id, s.kind, s.last_seen_at, rc.role FROM sessions s
-      LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
-      WHERE s.room_id=$1 AND (s.last_seen_at >= now() - interval '15 seconds' OR rc.role IS NOT NULL)
-      ORDER BY s.created_at`, [room.id]);
-  const queue = await queueRows(tx, run.id);
-  const events = await rows<EventRow>(tx, "SELECT * FROM events WHERE run_id=$1 ORDER BY event_index", [run.id]);
-  const runs = await rows<{ id: string; run_number: number; created_at: string; ended_at: string | null }>(tx,
-    "SELECT id, run_number, created_at, ended_at FROM runs WHERE room_id=$1 ORDER BY run_number DESC", [room.id]);
+  // Polling must not lock the shared room: four devices refreshing every two seconds
+  // would otherwise queue behind one another and behind financial mutations.
+  // This statement also avoids a database round trip for every section of the view.
+  const result = await rows<SnapshotReadRow>(db(), `
+    WITH target_room AS MATERIALIZED (
+      SELECT id, code, status, mode, revision, active_run_id
+      FROM rooms WHERE code=$1 AND expires_at>now()
+    ), heartbeat AS (
+      UPDATE sessions s SET last_seen_at=now()
+      FROM target_room room
+      WHERE s.room_id=room.id AND s.token_hash=$2
+      RETURNING s.id, s.kind, s.last_seen_at
+    )
+    SELECT run.id, run.room_id, run.run_number, run.step, run.payout_approved, run.bank_delayed,
+      room.code, room.status, room.mode, room.revision,
+      financial.cash_minor, financial.fund_minor, financial.pending_minor, financial.obligations_minor,
+      heartbeat.kind AS session_kind,
+      (SELECT role FROM role_claims WHERE room_id=room.id AND session_id=heartbeat.id) AS session_role,
+      (SELECT COALESCE(json_agg(json_build_object(
+        'id', s.id, 'kind', s.kind,
+        'last_seen_at', CASE WHEN s.id=heartbeat.id THEN heartbeat.last_seen_at ELSE s.last_seen_at END,
+        'role', rc.role) ORDER BY s.created_at), '[]'::json)
+        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
+        WHERE s.room_id=room.id AND (s.id=heartbeat.id OR s.last_seen_at>=now()-interval '15 seconds' OR rc.role IS NOT NULL)
+      ) AS sessions,
+      (SELECT COALESCE(json_agg(json_build_object('item_key', item_key, 'role', role, 'status', status) ORDER BY item_key), '[]'::json)
+        FROM demo_queue_items WHERE run_id=run.id) AS queue,
+      (SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.event_index), '[]'::json)
+        FROM events e WHERE e.run_id=run.id) AS events,
+      (SELECT COALESCE(json_agg(json_build_object('id', id, 'run_number', run_number,
+        'created_at', created_at, 'ended_at', ended_at) ORDER BY run_number DESC), '[]'::json)
+        FROM runs WHERE room_id=room.id) AS runs
+    FROM target_room room
+    JOIN heartbeat ON true
+    JOIN runs run ON run.id=room.active_run_id
+    JOIN financial_states financial ON financial.run_id=run.id`, [code.toUpperCase(), tokenHash(token)]);
+  const row = result[0];
+  if (!row) {
+    const room = await roomByCode(db(), code);
+    await sessionFor(db(), room.id, token);
+    throw new DomainError("RUN_NOT_FOUND", "This run is unavailable.", 404);
+  }
+  const state = stateFrom(row, row);
+  const sessions = jsonArray<PresenceRow>(row.sessions);
+  const queue = jsonArray<QueueRow>(row.queue);
+  const events = jsonArray<EventRow>(row.events);
+  const runs = jsonArray<RunSummaryRow>(row.runs);
+  const session = { kind: row.session_kind, role: row.session_role };
   return {
-    code: room.code.trim(), runId: run.id, runNumber: Number(run.run_number), revision: Number(room.revision),
-    status: room.status, mode: room.mode, scenario: "Friday customer redemptions", state: toWireState(state),
+    code: row.code.trim(), runId: row.id, runNumber: Number(row.run_number), revision: Number(row.revision),
+    status: row.status, mode: row.mode, scenario: "Friday customer redemptions", state: toWireState(state),
     next: nextAction(state.step),
     roles: ROLES.map(role => {
       const claim = sessions.find(c => c.role === role);
       return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
-        walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${room.code.trim()}` };
+        walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${row.code.trim()}` };
     }),
     presence: (() => {
       const online = sessions.filter(item => Date.now() - new Date(item.last_seen_at).getTime() < 15_000);
@@ -294,11 +347,10 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
             connected: Date.now() - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
     })(),
     mockItems: wireQueue(queue),
-    session: { kind: session.kind, role: session.role }, events: events.map(eventWire),
+    session, events: events.map(eventWire),
     runs: runs.map(r => ({ id: r.id, runNumber: Number(r.run_number), createdAt: r.created_at, endedAt: r.ended_at })),
     serverTime: new Date().toISOString(),
   };
-  });
 }
 
 type MutationContext = { tx: postgres.TransactionSql; room: RoomRow; run: RunRow; state: ScenarioState; session: SessionRow };
