@@ -13,10 +13,11 @@ This document records verified checks from the shared-room change. Fixture brows
 | Graft drift check | Pass — `pnpm exec graft build` then `pnpm exec graft check` |
 | Concurrent claims, singleton room, Kick/Rejoin, idempotency, rollback, and cleanup | Pass — 5 integration tests on a new disposable local PostgreSQL 17 database, removed after testing |
 | Live Supabase API smoke test | Pass — same `DEMO01` run, presenter open, participant join/claim, kick invalidates old session (HTTP 401), rejoin succeeds; test role freed afterward |
-| Four-device and deployed Vercel test | Pending updated deployment and browser access |
+| Canonical Vercel production API smoke test | Pass — public room open, join/claim, Kick returns HTTP 401 to old session, rejoin/claim, and test role cleanup |
+| Legacy `-ze6x` link and four-device test | Legacy redirect pending deployment; four-device test pending |
 
 Screenshots are saved in `docs/screenshots/` after the Playwright fixture suite runs.
 
 ## Supabase preparation (2026-10-09)
 
-The initial and foreign-key-index migrations are applied to the dedicated `reserve-operations-lab` Supabase project. All eight app tables have RLS enabled. The Supabase security advisor reports only the expected informational notice for tables with RLS and no browser-facing policies; the performance advisor reports no missing foreign-key indexes. The public `DEMO01` room is initialized there. A live API smoke test confirmed that a kicked session receives HTTP 401 and a new session can claim the freed role. No participant role remains claimed after the test. The original four integration tests and the new shared-room test passed on disposable local PostgreSQL. Live Vercel and four-device checks remain pending until the updated commit deploys and its server environment is confirmed.
+The initial and foreign-key-index migrations are applied to the dedicated `reserve-operations-lab` Supabase project. All eight app tables have RLS enabled. The Supabase security advisor reports only the expected informational notice for tables with RLS and no browser-facing policies; the performance advisor reports no missing foreign-key indexes. The public `DEMO01` room is initialized there. The canonical Vercel production URL also passed a live API smoke test: a kicked session receives HTTP 401, a new session can claim the freed role, and no participant role remains claimed after cleanup. The original four integration tests and the new shared-room test passed on disposable local PostgreSQL. Four simultaneous browser contexts are not yet verified against production.
