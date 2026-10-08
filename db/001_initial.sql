@@ -81,3 +81,16 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
   response_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- The browser never accesses these tables through Supabase's Data API.
+-- The server connects to Postgres directly and performs all authorization.
+-- RLS denies access to API roles without policies while the table owner can
+-- continue to run the application's server-side transactions.
+ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE role_claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE financial_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mutation_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE room_creation_requests ENABLE ROW LEVEL SECURITY;

@@ -6,11 +6,11 @@ A fictional, interactive demonstration of issuer reserve operations. A presenter
 
 ## Local setup
 
-Requirements: Node.js 22, pnpm 9, and a Neon PostgreSQL database for live multi-device use.
+Requirements: Node.js 22, pnpm 9, and a PostgreSQL database for live multi-device use. Supabase Postgres is supported.
 
 1. Run `pnpm install` in this project. The project `.npmrc` keeps the pnpm store and npm cache here.
 2. Copy `.env.example` to `.env.local` and set `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET` (at least 32 characters), `APP_ORIGIN`, and `CRON_SECRET`.
-3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The idempotent migration is in `db/001_initial.sql`.
+3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The idempotent migration is in `db/001_initial.sql`. On Supabase, use a dedicated project; the migration enables RLS on every app table, with no browser-facing policies. The app uses server-side Postgres connections and does not need a Supabase API key.
 4. Run `pnpm dev`. Open `http://localhost:3000` from the presenter laptop.
 
 For phones on a local network, use an HTTPS tunnel or host with a reachable origin. Set `APP_ORIGIN` to that exact origin. The secure session cookie is enabled automatically in production.
@@ -32,10 +32,10 @@ See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthr
 
 ## Tests
 
-Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, and `pnpm graft:check`. Playwright uses locally installed Chrome. Unit and fixture tests do not need a database. Set `NEON_TEST_DATABASE_URL` to a disposable Neon database and run `pnpm test:integration` to verify transactional concurrency and recovery. Results from the latest implementation run are in [Test results](docs/test-results.md).
+Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, and `pnpm graft:check`. Playwright uses locally installed Chrome. Unit and fixture tests do not need a database. Set `TEST_DATABASE_URL` to a disposable PostgreSQL database and run `pnpm test:integration` to verify transactional concurrency and recovery. The older `NEON_TEST_DATABASE_URL` name is also accepted. Results from the latest implementation run are in [Test results](docs/test-results.md).
 
 ## Vercel handoff
 
-Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. Run `pnpm migrate` against the chosen Neon database before using the site. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to Neon during compilation.
+Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. For Supabase, copy the **Transaction pooler** URI from the project's Connect panel into Vercel's `DATABASE_URL`; the app's Postgres.js client already disables prepared statements as required by transaction pooling. Run `pnpm migrate` against the chosen database before using the site. Keep the database URL server-only—never prefix it with `NEXT_PUBLIC_` or put it in Git. Redeploy after changing Vercel environment variables. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to a database during compilation.
 
-This repository does not provision Neon or include production credentials. The participant QR entry point is `/join/[code]` on the deployed origin.
+This repository does not provision a database or include production credentials. The participant QR entry point is `/join/[code]` on the deployed origin.

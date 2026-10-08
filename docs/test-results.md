@@ -15,3 +15,7 @@ This document records verified checks from the implementation run. Database-back
 | Live four-device and QR scan | Awaiting deployed or shared-origin Neon environment |
 
 Screenshots are saved in `docs/screenshots/` after the Playwright fixture suite runs.
+
+## Supabase preparation (2026-10-09)
+
+The migration was applied twice to a disposable local PostgreSQL 17 database without errors. All eight app tables had RLS enabled. The four transaction integration tests passed, including retry response shape and replay snapshots. Strict type checking, ESLint, and the five unit tests also passed. A live Supabase connection and Vercel room-creation check remain pending until a dedicated project is available.

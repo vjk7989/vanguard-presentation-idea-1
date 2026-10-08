@@ -4,12 +4,12 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 vi.mock("server-only", () => ({}));
-const testUrl = process.env.NEON_TEST_DATABASE_URL || (process.env.ALLOW_DATABASE_TESTS === "1" ? process.env.DATABASE_URL : undefined);
+const testUrl = process.env.TEST_DATABASE_URL || process.env.NEON_TEST_DATABASE_URL || (process.env.ALLOW_DATABASE_TESTS === "1" ? process.env.DATABASE_URL : undefined);
 const createdCodes: string[] = [];
 let store: typeof import("../../src/lib/store");
 let dbModule: typeof import("../../src/lib/db");
 
-describe.skipIf(!testUrl)("Neon transaction integration", () => {
+describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
   beforeAll(async () => {
     process.env.DATABASE_URL = testUrl;
     process.env.SESSION_SECRET = "test-session-secret-0123456789-abcdef";
@@ -62,6 +62,8 @@ describe.skipIf(!testUrl)("Neon transaction integration", () => {
     await expect(store.performAction(created.code, presenter, randomUUID(), created.runId, "request_redemption", "issuer")).rejects.toThrow("earlier run");
     const replay = await store.getRunReplay(created.code, presenter, created.runId);
     expect(replay.events.some(e => e.type === "request_redemption")).toBe(true);
+    expect(replay.events.every(e => e.stateAfter && typeof e.stateAfter === "object")).toBe(true);
+    expect(replay.closing).toEqual(snapshot.state.balances);
   });
 
   it("returns the original create and join results on retries across a reset", async () => {

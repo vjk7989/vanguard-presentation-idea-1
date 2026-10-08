@@ -23,6 +23,12 @@ type BalanceRow = { cash_minor: string; fund_minor: string; pending_minor: strin
 type EventRow = { id: string; event_index: number; type: string; actor: string; on_behalf_of: Role | null; label: string; amount_minor: string | null; reference: string | null; previous_hash: string; event_hash: string; state_after: unknown; created_at: string };
 type RequestRow = { response_json: unknown };
 
+function jsonObject<T>(value: unknown): T {
+  const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected a JSON object from Postgres.");
+  return parsed as T;
+}
+
 export type WireEvent = {
   id: string; index: number; type: string; actor: string; onBehalfOf: Role | null;
   label: string; amount: string | null; reference: string | null;
@@ -57,7 +63,7 @@ function eventWire(event: EventRow): WireEvent {
     id: event.id, index: Number(event.event_index), type: event.type, actor: event.actor,
     onBehalfOf: event.on_behalf_of, label: event.label, amount: event.amount_minor,
     reference: event.reference, previousHash: event.previous_hash, hash: event.event_hash,
-    stateAfter: event.state_after, createdAt: event.created_at,
+    stateAfter: jsonObject(event.state_after), createdAt: event.created_at,
   };
 }
 
@@ -125,9 +131,9 @@ async function insertRun(tx: Query, roomId: string, runNumber: number) {
 
 export async function createRoom(token: string, requestId: string) {
   const sql = db();
-  const existing = (await rows<{ response_json: { code: string; runId: string } }>(sql,
+  const existing = (await rows<RequestRow>(sql,
     "SELECT response_json FROM room_creation_requests WHERE request_id=$1", [requestId]))[0];
-  if (existing) return existing.response_json;
+  if (existing) return jsonObject<{ code: string; runId: string }>(existing.response_json);
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[b % 32]).join("");
     try {
@@ -145,9 +151,9 @@ export async function createRoom(token: string, requestId: string) {
       });
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "23505") {
-        const prior = (await rows<{ response_json: { code: string; runId: string } }>(sql,
+        const prior = (await rows<RequestRow>(sql,
           "SELECT response_json FROM room_creation_requests WHERE request_id=$1", [requestId]))[0];
-        if (prior) return prior.response_json;
+        if (prior) return jsonObject<{ code: string; runId: string }>(prior.response_json);
         continue;
       }
       throw error;
@@ -214,7 +220,7 @@ async function mutate(code: string, token: string, requestId: string, runId: str
     const room = await roomByCode(tx, code, true);
     const session = await sessionFor(tx, room.id, token);
     const prior = (await rows<RequestRow>(tx, "SELECT response_json FROM mutation_requests WHERE room_id=$1 AND request_id=$2", [room.id, requestId]))[0];
-    if (prior) return prior.response_json as MutationResult;
+    if (prior) return jsonObject<MutationResult>(prior.response_json);
     if (room.active_run_id !== runId) throw new DomainError("STALE_RUN", "This action belongs to an earlier run. Refresh the room.");
     const { run, state } = await runAndState(tx, runId);
     const outcome = await handler({ tx, room, run, state, session });
@@ -330,8 +336,9 @@ export async function getRunReplay(code: string, token: string, runId: string) {
   const run = (await rows<RunRow>(sql, "SELECT * FROM runs WHERE id=$1 AND room_id=$2", [runId, room.id]))[0];
   if (!run) throw new DomainError("RUN_NOT_FOUND", "This run is unavailable.", 404);
   const events = await rows<EventRow>(sql, "SELECT * FROM events WHERE run_id=$1 ORDER BY event_index", [runId]);
+  const wireEvents = events.map(eventWire);
   return { runId, runNumber: Number(run.run_number), opening: serializeBalances(OPENING_BALANCES),
-    events: events.map(eventWire), closing: events.length ? (events.at(-1)?.state_after as { balances: SerializedBalances }).balances : serializeBalances(OPENING_BALANCES) };
+    events: wireEvents, closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : serializeBalances(OPENING_BALANCES) };
 }
 
 export async function cleanupExpired() {
