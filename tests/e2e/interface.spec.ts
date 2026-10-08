@@ -11,8 +11,8 @@ test("anyone can open the shared control room without an access code", async ({ 
   await page.screenshot({ path: "docs/screenshots/home-1366x768.png", fullPage: true });
   await page.getByRole("button", { name: "Enter admin dashboard" }).click();
   await expect(page).toHaveURL(`/presenter/${CODE}`);
-  await expect(page.getByRole("heading", { name: "Role positions" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Devices in the room" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Live workflow" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices in this room" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Show QR" })).toBeVisible();
 });
 
@@ -29,12 +29,12 @@ test("presenter dashboard shows pending cash, comparison and event detail", asyn
   await mockRoom(page, snapshot("presenter", null));
   await page.goto(`/presenter/${CODE}`);
   await expect(page.getByRole("heading", { name: "Operations control room" })).toBeVisible();
-  await expect(page.getByLabel("QR code to join this room")).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "QR code to join this demo room" })).toHaveCount(0);
   await page.getByRole("button", { name: "Show QR" }).click();
-  await expect(page.getByLabel("QR code to join this room")).toBeVisible();
+  await expect(page.getByRole("img", { name: "QR code to join this demo room" })).toBeVisible();
   await page.getByRole("button", { name: "Kick Device 222222" }).click();
-  await expect(page.getByText("Available", { exact: true })).toBeVisible();
-  await expect(page.getByText("$200m", { exact: true })).toBeVisible();
+  await expect(page.getByText("Role open", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$150m", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("$300m", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Fund holdings fell to/ }).click();
   await expect(page.getByRole("heading", { name: "Event detail" })).toBeVisible();
@@ -42,7 +42,7 @@ test("presenter dashboard shows pending cash, comparison and event detail", asyn
   await page.getByRole("button", { name: "Close details" }).click();
   await expect(page.getByRole("heading", { name: "Event detail" })).toBeHidden();
   await page.getByRole("switch", { name: "Show shared workflow ledger" }).click();
-  await expect(page.getByText("Shared workflow ledger")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "One shared workflow history" })).toBeVisible();
   await page.screenshot({ path: "docs/screenshots/dashboard-1366x768.png", fullPage: true });
   const a11y = await new AxeBuilder({ page }).analyze();
   expect(a11y.violations.filter(v => v.impact === "critical" || v.impact === "serious")).toEqual([]);
@@ -131,10 +131,53 @@ test("admin sees and can kick a device that has not selected a role", async ({ p
     devices: [{ id: "33333333-3333-4333-8333-333333333333", label: "Device 333333", role: null, connected: true }] };
   await mockRoom(page, data);
   await page.goto(`/presenter/${CODE}`);
-  await expect(page.getByText("1 choosing a role")).toBeVisible();
+  await expect(page.getByText("1 choosing a role", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Kick Device 333333" }).click();
-  await expect(page.getByText("0 choosing a role")).toBeVisible();
+  await expect(page.getByText("0 choosing a role", { exact: true })).toBeVisible();
   await expect(page.getByText("No participant devices yet.", { exact: false })).toBeVisible();
+});
+
+test("admin can open ten practice requests without changing Friday balances", async ({ page }) => {
+  const data = snapshot("presenter", null);
+  const before = structuredClone(data.state.balances);
+  await mockRoom(page, data);
+  await page.goto(`/presenter/${CODE}`);
+  const action = page.getByRole("button", { name: "Open as Issuer" });
+  for (let index = 0; index < 10; index++) await action.click();
+  await expect(page.getByText("10/20 cases")).toBeVisible();
+  await expect(page.getByText("SIM-R1-C10")).toBeVisible();
+  expect(data.cases).toHaveLength(10);
+  expect(data.state.balances).toEqual(before);
+});
+
+test("Fund and Bank can review the same practice case on their work desks", async ({ browser }) => {
+  const fundContext = await browser.newContext({ viewport: { width: 360, height: 800 } });
+  const bankContext = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  try {
+    const fundPage = await fundContext.newPage();
+    const bankPage = await bankContext.newPage();
+    const fund = snapshot("participant", "fund");
+    const bank = snapshot("participant", "bank");
+    const item = { id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000001", ordinal: 1, reference: "SIM-R1-C01", amount: "1000000000",
+      status: "opened" as const, nextRole: "fund" as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    fund.cases = [item];
+    bank.cases = [{ ...item, status: "fund_reviewed", nextRole: "bank" }];
+    await mockRoom(fundPage, fund);
+    await mockRoom(bankPage, bank);
+    await fundPage.goto(`/room/${CODE}/work`);
+    await fundPage.getByRole("button", { name: /Open SIM-R1-C01/ }).click();
+    await expect(fundPage.getByRole("dialog")).toContainText("Practice only");
+    await fundPage.getByRole("button", { name: "Review & forward to Bank" }).click();
+    await expect(fundPage.getByRole("status")).toContainText("updated");
+    await bankPage.goto(`/room/${CODE}/work`);
+    await bankPage.getByRole("button", { name: /Open SIM-R1-C01/ }).click();
+    await bankPage.getByRole("button", { name: "Acknowledge status to Issuer" }).click();
+    await expect(bankPage.getByRole("status")).toContainText("updated");
+    expect(fund.state.balances).toEqual(bank.state.balances);
+  } finally {
+    await fundContext.close();
+    await bankContext.close();
+  }
 });
 
 for (const [role, heading] of [["issuer", "Liquidity & payouts"], ["fund", "Redemptions & settlement"], ["bank", "Payments & confirmations"]] as const) {

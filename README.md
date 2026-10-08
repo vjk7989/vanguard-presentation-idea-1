@@ -1,6 +1,6 @@
 # Reserve Operations Lab
 
-A fictional, interactive demonstration of issuer reserve operations. Everyone uses one public room, `DEMO01`. A presenter controls the shared view on a laptop, and three participants use phones as issuer treasury, fund operations, and bank operations. The six-step Friday redemption ends with $1.5bn in fund holdings, $50m bank cash, and $1.55bn obligations.
+A fictional, interactive demonstration of issuer reserve operations. Everyone uses one public room, `DEMO01`. A presenter controls the live workflow view on a laptop, and three participants use phones as issuer treasury, fund operations, and bank operations. New six-step Friday runs redeem $150m and end with $1.55bn in fund holdings, $0 bank cash, and $1.55bn obligations. Earlier $200m/$50m-buffer runs remain replayable.
 
 **Simulation disclaimer:** All participants, balances, wallet IDs, references, transactions, and ledger hashes are fictional. There is no real bank connection, blockchain node, private key, cryptocurrency wallet, settlement network, or money movement. This is not an official Vanguard product or endorsement. The demonstration makes no claim about settlement speed, cost savings, or blockchain performance.
 
@@ -19,7 +19,7 @@ For phones, scan the QR to use the canonical deployment. To run an entirely loca
 
 Choose **Enter admin dashboard** on the public homepage, then **Show QR**. Revealing the QR does not create a room or reset the run; it always points to `/join/DEMO01`. A scan connects the device automatically and opens the live role picker. The admin sees online counts and a roster, including devices still choosing a role. The admin can **Kick** any participant device, invalidating its session; that person can press **Rejoin** or rescan. Participants can use **Change role** to release their position and choose another available role.
 
-Each participant gets a distinct treasury, fund, or bank workspace with Overview (`/room/DEMO01`), Work (`/room/DEMO01/work`), and Activity (`/room/DEMO01/activity`) views. Desktop uses a navigation rail; phones use bottom navigation and touch-friendly record details. Every fictional background queue item opens a detail view; pending items can be approved or confirmed, and the result is shared across devices. Those items do **not** change reserve balances. Only the highlighted Friday-scenario action advances the six-step financial run. Start the scenario, follow that prompt, and use presenter takeover if a role is unoccupied. Comparison mode affects presentation only. Delay and duplicate-bank exceptions remain available. Restart starts a fresh background queue and financial run while retaining roles; earlier runs remain available for event-by-event replay.
+Each participant gets a distinct treasury, fund, or bank workspace with Overview (`/room/DEMO01`), Work (`/room/DEMO01/work`), and Activity (`/room/DEMO01/activity`) views. Desktop uses a navigation rail; phones use bottom navigation and touch-friendly record details. The Issuer can open up to 20 repeatable practice coordination cases per run; Fund reviews each request and asks Bank for status; Bank acknowledges to Issuer. Every accepted click appears on the presenter diagram and event history. These fictional cases and the separate background queue do **not** change reserve balances. Only the highlighted Friday-scenario action advances the six-step financial run. Start the scenario, follow that prompt, and use presenter takeover if a role is unoccupied. Comparison mode changes the display between separate party records/reconciliation and one simulated hash-linked workflow history, not balances or timing. Delay and duplicate-bank exceptions remain available. Restart starts a fresh practice queue, background queue, and financial run while retaining roles; earlier runs remain available for event-by-event replay.
 
 Chrome tabs in one profile share a session and role and count as one device. A separate Chrome profile or device gets its own session and can claim another available role. Opening the QR link in the admin's own Chrome profile keeps that profile as admin; use a separate profile or Incognito window to join as a participant.
 
@@ -29,12 +29,12 @@ See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthr
 
 - PostgreSQL `BIGINT` stores all money in minor units. API JSON exposes monetary values as decimal strings.
 - Each accepted workflow event receives an ordered index, previous hash, SHA-256 event hash, and state-after snapshot. These are simulated ledger references.
-- Background queue approvals are per-run database records. Their event snapshots include queue status for deterministic replay, while the financial state remains unchanged.
+- Practice cases and background queue approvals are per-run database records. Their event snapshots include status for deterministic replay, while the financial state remains unchanged.
 - Mutations lock the room row, validate session and run, update state, append an event, save an idempotent response, and increment the revision in one database transaction.
 - Role claims have unique room/role and room/session constraints. Presenter controls and role actions are checked against the session on the server; anyone may obtain a presenter session from the public home page. Do not use this deployment for real data.
 - Sessions use opaque HTTP-only cookie tokens. Only HMAC-SHA-256 token hashes are stored in the database. Mutations validate the `Origin` header against the request origin (and optional `APP_ORIGIN`).
 - The shared `DEMO01` room persists; older legacy rooms expire after 24 hours. A Hobby-compatible daily Vercel Cron job deletes expired legacy rooms at its next run (scheduled for 02:00 UTC, with Hobby's within-the-hour timing).
-- Presence counts sessions seen within 15 seconds and refreshes visible screens every two seconds. The daily cleanup also removes inactive demo sessions older than 24 hours.
+- Presence counts sessions seen within 15 seconds and refreshes visible screens every two seconds. Unchanged polls return only compact presence data; changed polls return new events after the client's event cursor. The daily cleanup also removes inactive demo sessions older than 24 hours.
 
 ## Tests
 

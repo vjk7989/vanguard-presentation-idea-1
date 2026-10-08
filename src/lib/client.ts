@@ -1,4 +1,4 @@
-import type { Snapshot } from "./store";
+import type { RoomPulse, Snapshot } from "./store";
 
 export type ApiError = Error & { code?: string };
 
@@ -17,6 +17,9 @@ export function mutation(runId: string, extra: object = {}) {
   return { requestId: crypto.randomUUID(), runId, ...extra };
 }
 
-export async function loadRoom(code: string): Promise<Snapshot> {
-  return api<Snapshot>(`/api/rooms/${encodeURIComponent(code)}/state`);
+export function loadRoom(code: string): Promise<Snapshot>;
+export function loadRoom(code: string, cursor: { revision: number; eventIndex: number; runId: string }): Promise<Snapshot | RoomPulse>;
+export async function loadRoom(code: string, cursor?: { revision: number; eventIndex: number; runId: string }): Promise<Snapshot | RoomPulse> {
+  const query = cursor ? `?afterRevision=${cursor.revision}&afterEventIndex=${cursor.eventIndex}&knownRunId=${encodeURIComponent(cursor.runId)}` : "";
+  return api<Snapshot | RoomPulse>(`/api/rooms/${encodeURIComponent(code)}/state${query}`);
 }

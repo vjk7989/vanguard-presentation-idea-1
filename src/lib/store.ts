@@ -3,15 +3,16 @@ import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 import { db } from "./db";
 import {
-  ACTIONS, applyAction, DomainError, nextAction,
-  OPENING_BALANCES, ROLES, serializeBalances, toWireState,
+  actionsForVersion, applyAction, DomainError, nextAction,
+  openingBalances, ROLES, serializeBalances, toWireState, formatMoney,
   type ActionType, type ControlType, type Mode, type Role, type RoomStatus,
-  type ScenarioState, type SerializedBalances,
+  type ScenarioState, type ScenarioVersion, type SerializedBalances,
 } from "./domain";
 import { tokenHash } from "./security";
 import { hashEvent } from "./ledger";
 import { DEMO_ROOM_CODE } from "./demo";
 import { fixtureByKey, MOCK_FIXTURES, MOCK_INITIAL_STATUS, type MockItem, type MockStatus } from "./mock-queue";
+import { advanceCase, CASE_PRESETS, nextCaseRole, type CaseAction, type CasePreset, type CaseStatus, type DemoCase } from "./demo-cases";
 
 type Query = postgres.Sql | postgres.TransactionSql;
 type Param = string | number | boolean | null;
@@ -19,17 +20,18 @@ async function rows<T>(query: Query, statement: string, params: Param[] = []): P
   return (await query.unsafe(statement, params)) as unknown as T[];
 }
 type RoomRow = { id: string; code: string; status: RoomStatus; mode: Mode; revision: string; active_run_id: string; expires_at: string };
-type RunRow = { id: string; room_id: string; run_number: number; step: number; payout_approved: boolean; bank_delayed: boolean };
+type RunRow = { id: string; room_id: string; run_number: number; scenario_version: ScenarioVersion; step: number; payout_approved: boolean; bank_delayed: boolean };
 type SessionRow = { id: string; kind: "presenter" | "participant"; role: Role | null };
 type BalanceRow = { cash_minor: string; fund_minor: string; pending_minor: string; obligations_minor: string };
 type EventRow = { id: string; event_index: number; type: string; actor: string; on_behalf_of: Role | null; label: string; amount_minor: string | null; reference: string | null; previous_hash: string; event_hash: string; state_after: unknown; created_at: string };
 type RequestRow = { response_json: unknown };
 type QueueRow = { item_key: string; role: Role; status: MockStatus };
+type CaseRow = { id: string; run_id: string; ordinal: number; reference: string; amount_minor: string; status: CaseStatus; created_at: string; updated_at: string };
 type PresenceRow = { id: string; kind: "presenter" | "participant"; role: Role | null; last_seen_at: string };
 type RunSummaryRow = { id: string; run_number: number; created_at: string; ended_at: string | null };
 type SnapshotReadRow = RunRow & BalanceRow & Pick<RoomRow, "code" | "status" | "mode" | "revision"> & {
   session_kind: SessionRow["kind"] | null; session_role: Role | null;
-  sessions: PresenceRow[]; queue: QueueRow[]; events: EventRow[]; runs: RunSummaryRow[];
+  sessions: PresenceRow[]; queue: QueueRow[]; cases: CaseRow[]; events: EventRow[]; runs: RunSummaryRow[]; latest_event_index: number;
 };
 
 function jsonObject<T>(value: unknown): T {
@@ -50,23 +52,56 @@ export type WireEvent = {
   previousHash: string; hash: string; stateAfter: unknown; createdAt: string;
 };
 export type Snapshot = {
-  code: string; runId: string; runNumber: number; revision: number; status: RoomStatus; mode: Mode;
+  code: string; runId: string; runNumber: number; scenarioVersion: ScenarioVersion; revision: number; status: RoomStatus; mode: Mode;
   joinUrl?: string;
   scenario: "Friday customer redemptions";
   state: ReturnType<typeof toWireState>;
-  next: (typeof ACTIONS)[number] | null;
+  next: ReturnType<typeof nextAction>;
   roles: { role: Role; claimed: boolean; connected: boolean; walletId: string }[];
   presence: { online: number; admins: number; participants: number; waiting: number; assigned: number;
     devices: { id: string; label: string; role: Role | null; connected: boolean }[] };
   mockItems: MockItem[];
+  cases: DemoCase[];
   session: { kind: "presenter" | "participant"; role: Role | null };
   events: WireEvent[];
+  latestEventIndex: number;
   runs: { id: string; runNumber: number; createdAt: string; endedAt: string | null }[];
   serverTime: string;
+};
+export type RoomPulse = {
+  changed: false; code: string; runId: string; revision: number;
+  roles: Snapshot["roles"]; presence: Snapshot["presence"]; serverTime: string;
 };
 
 async function queueRows(query: Query, runId: string): Promise<QueueRow[]> {
   return rows<QueueRow>(query, "SELECT item_key, role, status FROM demo_queue_items WHERE run_id=$1 ORDER BY item_key", [runId]);
+}
+
+async function caseRows(query: Query, runId: string): Promise<CaseRow[]> {
+  return rows<CaseRow>(query, "SELECT id, run_id, ordinal, reference, amount_minor, status, created_at, updated_at FROM demo_cases WHERE run_id=$1 ORDER BY ordinal", [runId]);
+}
+
+function wireCase(row: CaseRow): DemoCase {
+  return { id: row.id, ordinal: Number(row.ordinal), reference: row.reference, amount: row.amount_minor,
+    status: row.status, nextRole: nextCaseRole(row.status), createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function rolesFor(sessions: PresenceRow[], code: string): Snapshot["roles"] {
+  return ROLES.map(role => {
+    const claim = sessions.find(item => item.role === role);
+    return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
+      walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${code}` };
+  });
+}
+
+function presenceFor(sessions: PresenceRow[], sessionKind: SessionRow["kind"]): Snapshot["presence"] {
+  const online = sessions.filter(item => Date.now() - new Date(item.last_seen_at).getTime() < 15_000);
+  const participants = online.filter(item => item.kind === "participant");
+  return { online: online.length, admins: online.length - participants.length, participants: participants.length,
+    waiting: participants.filter(item => !item.role).length, assigned: participants.filter(item => item.role).length,
+    devices: sessionKind === "presenter" ? sessions.filter(item => item.kind === "participant")
+      .map(item => ({ id: item.id, label: `Device ${item.id.slice(0, 6).toUpperCase()}`, role: item.role,
+        connected: Date.now() - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
 }
 
 function wireQueue(rowsForRun: QueueRow[]): MockItem[] {
@@ -77,13 +112,15 @@ function wireQueue(rowsForRun: QueueRow[]): MockItem[] {
 }
 
 function stateFrom(run: RunRow, financial: BalanceRow): ScenarioState {
+  const opening = openingBalances(Number(run.scenario_version) === 2 ? 2 : 1);
   return {
+    version: Number(run.scenario_version) === 2 ? 2 : 1,
     step: Number(run.step), payoutApproved: run.payout_approved, bankDelayed: run.bank_delayed,
     balances: {
       cash: BigInt(financial.cash_minor), fund: BigInt(financial.fund_minor),
       pending: BigInt(financial.pending_minor), obligations: BigInt(financial.obligations_minor),
-      requiredBuffer: OPENING_BALANCES.requiredBuffer, plannedPayout: OPENING_BALANCES.plannedPayout,
-      redemption: OPENING_BALANCES.redemption,
+      requiredBuffer: opening.requiredBuffer, plannedPayout: opening.plannedPayout,
+      redemption: opening.redemption,
     },
   };
 }
@@ -114,8 +151,8 @@ async function sessionFor(query: Query, roomId: string, token: string): Promise<
   return found[0];
 }
 
-async function runAndState(query: Query, runId: string) {
-  const run = (await rows<RunRow>(query, "SELECT * FROM runs WHERE id = $1", [runId]))[0];
+async function runAndState(query: Query, runId: string, lock = false) {
+  const run = (await rows<RunRow>(query, `SELECT * FROM runs WHERE id = $1 ${lock ? "FOR UPDATE" : ""}`, [runId]))[0];
   const financial = (await rows<BalanceRow>(query, "SELECT * FROM financial_states WHERE run_id = $1", [runId]))[0];
   if (!run || !financial) throw new DomainError("RUN_NOT_FOUND", "This run is unavailable.", 404);
   return { run, state: stateFrom(run, financial) };
@@ -130,7 +167,9 @@ async function appendEvent(tx: Query, room: RoomRow, run: RunRow, state: Scenari
   const previousHash = previous?.event_hash ?? "0".repeat(64);
   const createdAt = new Date().toISOString();
   const queue = await queueRows(tx, run.id);
-  const stateAfter = { ...toWireState(state), demoQueue: Object.fromEntries(queue.map(item => [item.item_key, item.status])) };
+  const cases = await caseRows(tx, run.id);
+  const stateAfter = { ...toWireState(state), demoQueue: Object.fromEntries(queue.map(item => [item.item_key, item.status])),
+    demoCases: Object.fromEntries(cases.map(item => [item.reference, item.status])) };
   const amount = event.amount?.toString() ?? null;
   const reference = event.reference ?? null;
   const hash = hashEvent({ runId: run.id, index, type: event.type, actor: event.actor, onBehalfOf: event.onBehalfOf ?? null, label: event.label,
@@ -153,8 +192,8 @@ async function saveState(tx: Query, run: RunRow, state: ScenarioState) {
 
 async function insertRun(tx: Query, roomId: string, runNumber: number) {
   const id = randomUUID();
-  await rows(tx, "INSERT INTO runs (id, room_id, run_number) VALUES ($1,$2,$3)", [id, roomId, runNumber]);
-  const b = OPENING_BALANCES;
+  await rows(tx, "INSERT INTO runs (id, room_id, run_number, scenario_version) VALUES ($1,$2,$3,2)", [id, roomId, runNumber]);
+  const b = openingBalances(2);
   await rows(tx, `INSERT INTO financial_states (run_id, cash_minor, fund_minor, pending_minor, obligations_minor) VALUES ($1,$2,$3,$4,$5)`,
     [id, b.cash.toString(), b.fund.toString(), b.pending.toString(), b.obligations.toString()]);
   for (const fixture of MOCK_FIXTURES) {
@@ -291,7 +330,39 @@ export async function roomPreview(code: string) {
     roles: ROLES.map(role => ({ role, claimed: claimed.includes(role) })) };
 }
 
-export async function getSnapshot(code: string, token: string): Promise<Snapshot> {
+export async function getRoomPoll(code: string, token: string, afterRevision: number,
+  afterEventIndex: number, knownRunId: string): Promise<Snapshot | RoomPulse> {
+  const result = await rows<{ code: string; revision: string; active_run_id: string;
+    session_kind: SessionRow["kind"] | null; sessions: PresenceRow[] }>(db(), `
+    WITH target_room AS MATERIALIZED (
+      SELECT id, code, revision, active_run_id FROM rooms WHERE code=$1 AND expires_at>now()
+    ), heartbeat AS (
+      UPDATE sessions s SET last_seen_at=now() FROM target_room room
+      WHERE s.room_id=room.id AND s.token_hash=$2
+      RETURNING s.id, s.kind, s.last_seen_at
+    )
+    SELECT room.code, room.revision, room.active_run_id, heartbeat.kind AS session_kind,
+      (SELECT COALESCE(json_agg(json_build_object('id', s.id, 'kind', s.kind,
+        'last_seen_at', CASE WHEN s.id=heartbeat.id THEN heartbeat.last_seen_at ELSE s.last_seen_at END,
+        'role', rc.role) ORDER BY s.created_at), '[]'::json)
+        FROM sessions s LEFT JOIN role_claims rc ON rc.session_id=s.id AND rc.room_id=s.room_id
+        WHERE s.room_id=room.id AND (s.id=heartbeat.id OR s.last_seen_at>=now()-interval '15 seconds' OR rc.role IS NOT NULL)
+      ) AS sessions
+    FROM target_room room LEFT JOIN heartbeat ON true`, [code.toUpperCase(), tokenHash(token)]);
+  const row = result[0];
+  if (!row) throw new DomainError("ROOM_NOT_FOUND", "This room has expired or does not exist.", 404);
+  if (!row.session_kind) throw new DomainError("NO_SESSION", "Join this room to continue.", 401);
+  const revision = Number(row.revision);
+  if (revision !== afterRevision || row.active_run_id !== knownRunId) {
+    return getSnapshot(code, token, row.active_run_id === knownRunId ? afterEventIndex : 0);
+  }
+  const sessions = jsonArray<PresenceRow>(row.sessions);
+  return { changed: false, code: row.code.trim(), runId: row.active_run_id, revision,
+    roles: rolesFor(sessions, row.code.trim()), presence: presenceFor(sessions, row.session_kind),
+    serverTime: new Date().toISOString() };
+}
+
+export async function getSnapshot(code: string, token: string, afterEventIndex = 0): Promise<Snapshot> {
   // Polling must not lock the shared room: four devices refreshing every two seconds
   // would otherwise queue behind one another and behind financial mutations.
   // This statement also avoids a database round trip for every section of the view.
@@ -305,7 +376,7 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
       WHERE s.room_id=room.id AND s.token_hash=$2
       RETURNING s.id, s.kind, s.last_seen_at
     )
-    SELECT run.id, run.room_id, run.run_number, run.step, run.payout_approved, run.bank_delayed,
+    SELECT run.id, run.room_id, run.run_number, run.scenario_version, run.step, run.payout_approved, run.bank_delayed,
       room.code, room.status, room.mode, room.revision,
       financial.cash_minor, financial.fund_minor, financial.pending_minor, financial.obligations_minor,
       heartbeat.kind AS session_kind,
@@ -319,15 +390,18 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
       ) AS sessions,
       (SELECT COALESCE(json_agg(json_build_object('item_key', item_key, 'role', role, 'status', status) ORDER BY item_key), '[]'::json)
         FROM demo_queue_items WHERE run_id=run.id) AS queue,
+      (SELECT COALESCE(json_agg(row_to_json(c) ORDER BY c.ordinal), '[]'::json)
+        FROM demo_cases c WHERE c.run_id=run.id) AS cases,
       (SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.event_index), '[]'::json)
-        FROM events e WHERE e.run_id=run.id) AS events,
+        FROM events e WHERE e.run_id=run.id AND e.event_index>$3) AS events,
+      (SELECT COALESCE(MAX(e.event_index),0) FROM events e WHERE e.run_id=run.id) AS latest_event_index,
       (SELECT COALESCE(json_agg(json_build_object('id', id, 'run_number', run_number,
         'created_at', created_at, 'ended_at', ended_at) ORDER BY run_number DESC), '[]'::json)
         FROM runs WHERE room_id=room.id) AS runs
     FROM target_room room
     LEFT JOIN heartbeat ON true
     JOIN runs run ON run.id=room.active_run_id
-    JOIN financial_states financial ON financial.run_id=run.id`, [code.toUpperCase(), tokenHash(token)]);
+    JOIN financial_states financial ON financial.run_id=run.id`, [code.toUpperCase(), tokenHash(token), afterEventIndex]);
   const row = result[0];
   if (!row) {
     await roomByCode(db(), code);
@@ -337,29 +411,19 @@ export async function getSnapshot(code: string, token: string): Promise<Snapshot
   const state = stateFrom(row, row);
   const sessions = jsonArray<PresenceRow>(row.sessions);
   const queue = jsonArray<QueueRow>(row.queue);
+  const cases = jsonArray<CaseRow>(row.cases);
   const events = jsonArray<EventRow>(row.events);
   const runs = jsonArray<RunSummaryRow>(row.runs);
   const session = { kind: row.session_kind, role: row.session_role };
   return {
-    code: row.code.trim(), runId: row.id, runNumber: Number(row.run_number), revision: Number(row.revision),
+    code: row.code.trim(), runId: row.id, runNumber: Number(row.run_number), scenarioVersion: state.version, revision: Number(row.revision),
     status: row.status, mode: row.mode, scenario: "Friday customer redemptions", state: toWireState(state),
-    next: nextAction(state.step),
-    roles: ROLES.map(role => {
-      const claim = sessions.find(c => c.role === role);
-      return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
-        walletId: `DEMO-${role === "issuer" ? "ISS" : role === "fund" ? "FUND" : "BANK"}-${row.code.trim()}` };
-    }),
-    presence: (() => {
-      const online = sessions.filter(item => Date.now() - new Date(item.last_seen_at).getTime() < 15_000);
-      const participants = online.filter(item => item.kind === "participant");
-      return { online: online.length, admins: online.length - participants.length, participants: participants.length,
-        waiting: participants.filter(item => !item.role).length, assigned: participants.filter(item => item.role).length,
-        devices: session.kind === "presenter" ? sessions.filter(item => item.kind === "participant")
-          .map(item => ({ id: item.id, label: `Device ${item.id.slice(0, 6).toUpperCase()}`, role: item.role,
-            connected: Date.now() - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
-    })(),
+    next: nextAction(state.step, state.version),
+    roles: rolesFor(sessions, row.code.trim()),
+    presence: presenceFor(sessions, session.kind),
     mockItems: wireQueue(queue),
-    session, events: events.map(eventWire),
+    cases: cases.map(wireCase),
+    session, events: events.map(eventWire), latestEventIndex: Number(row.latest_event_index),
     runs: runs.map(r => ({ id: r.id, runNumber: Number(r.run_number), createdAt: r.created_at, endedAt: r.ended_at })),
     serverTime: new Date().toISOString(),
   };
@@ -376,7 +440,7 @@ async function mutate(code: string, token: string, requestId: string, runId: str
     const prior = (await rows<RequestRow>(tx, "SELECT response_json FROM mutation_requests WHERE room_id=$1 AND request_id=$2", [room.id, requestId]))[0];
     if (prior) return jsonObject<MutationResult>(prior.response_json);
     if (room.active_run_id !== runId) throw new DomainError("STALE_RUN", "This action belongs to an earlier run. Refresh the room.");
-    const { run, state } = await runAndState(tx, runId);
+    const { run, state } = await runAndState(tx, runId, true);
     const outcome = await handler({ tx, room, run, state, session });
     const revision = Number(room.revision) + 1;
     await rows(tx, "UPDATE rooms SET revision=$2 WHERE id=$1", [room.id, revision]);
@@ -452,6 +516,53 @@ export async function completeMockItem(code: string, token: string, requestId: s
   });
 }
 
+export async function createDemoCase(code: string, token: string, requestId: string, runId: string,
+  preset: CasePreset, onBehalfOf?: Role) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before opening a practice case.");
+    if (!(preset in CASE_PRESETS)) throw new DomainError("BAD_PRESET", "Choose a practice amount.", 400);
+    if (session.kind === "participant" && (session.role !== "issuer" || onBehalfOf))
+      throw new DomainError("WRONG_ROLE", "Only Issuer Treasury can open a practice case.", 403);
+    if (session.kind === "presenter" && onBehalfOf !== "issuer")
+      throw new DomainError("ROLE_REQUIRED", "Select Issuer Treasury for presenter takeover.", 403);
+    const prior = await caseRows(tx, run.id);
+    const ordinal = prior.length + 1;
+    if (ordinal > 20) throw new DomainError("CASE_LIMIT", "This run already has 20 practice cases. Restart for a fresh queue.");
+    const reference = `SIM-R${run.run_number}-C${String(ordinal).padStart(2, "0")}`;
+    const amount = CASE_PRESETS[preset];
+    await rows(tx, `INSERT INTO demo_cases (id, run_id, ordinal, reference, amount_minor, status)
+      VALUES ($1,$2,$3,$4,$5,'opened')`, [randomUUID(), run.id, ordinal, reference, amount]);
+    const event = await appendEvent(tx, room, run, state, { type: "case_opened",
+      actor: session.kind === "presenter" ? "presenter" : "issuer",
+      onBehalfOf: session.kind === "presenter" ? "issuer" : null,
+      label: `Practice request ${reference}: Issuer sent ${formatMoney(amount)} to Fund for review. No cash moved.`, reference });
+    return { eventId: event.id, message: `${reference} sent to Fund. Practice only; reserve balances did not change.` };
+  });
+}
+
+export async function advanceDemoCase(code: string, token: string, requestId: string, runId: string,
+  caseId: string, action: CaseAction, onBehalfOf?: Role) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume the scenario before reviewing practice cases.");
+    if (session.kind === "participant" && onBehalfOf)
+      throw new DomainError("PRESENTER_ONLY", "Only an admin can act on behalf of a role.", 403);
+    const role = session.kind === "presenter" ? onBehalfOf : session.role;
+    if (!role) throw new DomainError("ROLE_REQUIRED", "Choose a role before acting.", 403);
+    const row = (await rows<CaseRow>(tx, `SELECT id, run_id, ordinal, reference, amount_minor, status, created_at, updated_at
+      FROM demo_cases WHERE id=$1 AND run_id=$2 FOR UPDATE`, [caseId, run.id]))[0];
+    if (!row) throw new DomainError("CASE_NOT_FOUND", "This practice case is not in the current run.", 404);
+    const nextStatus = advanceCase(row.status, action, role);
+    await rows(tx, "UPDATE demo_cases SET status=$3, updated_at=now() WHERE id=$1 AND run_id=$2", [caseId, run.id, nextStatus]);
+    const label = nextStatus === "fund_reviewed"
+      ? `Practice request ${row.reference}: Fund reviewed ${formatMoney(row.amount_minor)} and asked Bank for a status message. No cash moved.`
+      : `Practice request ${row.reference}: Bank acknowledged the status to Issuer. No cash moved.`;
+    const event = await appendEvent(tx, room, run, state, { type: nextStatus === "fund_reviewed" ? "case_fund_reviewed" : "case_bank_acknowledged",
+      actor: session.kind === "presenter" ? "presenter" : role,
+      onBehalfOf: session.kind === "presenter" ? role : null, label, reference: row.reference });
+    return { eventId: event.id, message: `${row.reference} updated. Practice only; reserve balances did not change.` };
+  });
+}
+
 export async function performAction(code: string, token: string, requestId: string, runId: string,
   action: ActionType, onBehalfOf?: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
@@ -461,7 +572,7 @@ export async function performAction(code: string, token: string, requestId: stri
     if (session.kind === "participant" && onBehalfOf) throw new DomainError("PRESENTER_ONLY", "Only the presenter can act on behalf of a role.", 403);
     const next = applyAction(state, action, role);
     await saveState(tx, run, next);
-    const definition = ACTIONS[state.step];
+    const definition = actionsForVersion(state.version)[state.step];
     const amount = action === "request_redemption" || action === "process_redemption" || action === "confirm_proceeds"
       ? state.balances.redemption : action === "approve_payouts" || action === "confirm_payouts" ? state.balances.plannedPayout : null;
     const reference = action === "confirm_proceeds" ? `DEMO-BANK-${room.code.trim()}-R${run.run_number}`
@@ -504,7 +615,7 @@ export async function controlRoom(code: string, token: string, requestId: string
       if (state.step !== 3) throw new DomainError("WRONG_STEP", "Delay bank confirmation after fund processing and before bank receipt.");
       state = { ...state, bankDelayed: true };
       await saveState(tx, run, state);
-      label = "Bank confirmation delayed. $200m remains pending until the bank confirms receipt.";
+      label = `Bank confirmation delayed. ${formatMoney(state.balances.redemption)} remains pending until the bank confirms receipt.`;
     } else if (control === "release_bank") {
       if (!state.bankDelayed) throw new DomainError("NOT_DELAYED", "Bank confirmation is not delayed.");
       state = { ...state, bankDelayed: false };
@@ -536,9 +647,11 @@ export async function getRunReplay(code: string, token: string, runId: string) {
   const events = await rows<EventRow>(sql, "SELECT * FROM events WHERE run_id=$1 ORDER BY event_index", [runId]);
   const wireEvents = events.map(eventWire);
   const queue = await queueRows(sql, runId);
-  return { runId, runNumber: Number(run.run_number), opening: serializeBalances(OPENING_BALANCES),
-    events: wireEvents, mockItems: wireQueue(queue),
-    closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : serializeBalances(OPENING_BALANCES) };
+  const cases = await caseRows(sql, runId);
+  const opening = serializeBalances(openingBalances(Number(run.scenario_version) === 2 ? 2 : 1));
+  return { runId, runNumber: Number(run.run_number), scenarioVersion: Number(run.scenario_version), opening,
+    events: wireEvents, mockItems: wireQueue(queue), cases: cases.map(wireCase),
+    closing: wireEvents.length ? (wireEvents.at(-1)?.stateAfter as { balances: SerializedBalances }).balances : opening };
 }
 
 export async function cleanupExpired() {

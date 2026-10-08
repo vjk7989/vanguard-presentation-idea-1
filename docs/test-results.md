@@ -1,4 +1,23 @@
-# Test results
+# Test results — current release
+
+Verified on 2026-10-09 for the deck-aligned Friday run and repeatable practice coordination.
+
+| Check | Result |
+|---|---|
+| Strict TypeScript and ESLint | Pass — `pnpm typecheck`, `pnpm lint` |
+| Financial, case-ordering, hash-link and formatting unit tests | Pass — 11 tests. Version two closes with $0 cash/$1.55bn fund; version one retains its $50m buffer. |
+| PostgreSQL transaction integration | Pass — 10 tests on the existing isolated local PostgreSQL 17 cluster, including ten cases, concurrent retries, ordering, pause, reset and unchanged balances. The test cluster was stopped afterward. |
+| Fixture Chrome browser flows | Pass — 36 Playwright tests covering all nine role/view combinations, ten practice requests, Fund/Bank case actions, QR joining, cross-profile contexts, same-profile tabs, kick/rejoin, comparison and replay. |
+| Responsive and accessibility | Pass — 320–430px phones, 768px tablet, 1366px desktop, 200% text, keyboard, reduced motion, and no serious/critical axe findings on tested screens. |
+| Production compilation | Pass — `pnpm build`, including page generation with two workers. |
+| Graft drift | Pass — `pnpm exec graft build` and `pnpm graft:check`. |
+| Supabase migration | Pass — `004_pitch_cases.sql` applied to the dedicated `reserve-operations-lab` project. Existing run remains version one; new runs select version two. |
+| Canonical Vercel smoke test | Pending deployment of this change. |
+| Physical Chrome device | Unverified — no external phone was connected to this workspace. |
+
+Updated screenshots are in `docs/screenshots/`. The final browser pass used `PLAYWRIGHT_TRACE=off` because the C: drive has less than 250 MiB free. The public Supabase room was not used as a disposable integration database. The Supabase security advisor's [RLS-enabled/no-policy notice](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) is intentional for server-only tables; browser clients never query the Supabase Data API. The new case index is currently an informational [unused-index notice](https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index) because the table is new.
+
+## Previous release baseline
 
 Verified on 2026-10-09 for the three-view role workspaces and cross-profile joining update.
 

@@ -2,6 +2,7 @@ export const ROLES = ["issuer", "fund", "bank"] as const;
 export type Role = (typeof ROLES)[number];
 export type Mode = "conventional" | "ledger";
 export type RoomStatus = "lobby" | "active" | "paused" | "ended";
+export type ScenarioVersion = 1 | 2;
 export type ActionType =
   | "request_redemption"
   | "accept_redemption"
@@ -12,6 +13,7 @@ export type ActionType =
 export type ControlType =
   | "start" | "pause" | "resume" | "reset" | "end"
   | "set_mode" | "delay_bank" | "release_bank" | "repeat_bank";
+export type ActionDefinition = { type: ActionType; role: Role; label: string; result: string };
 
 export type MoneyString = string;
 export interface Balances {
@@ -33,6 +35,7 @@ export interface SerializedBalances {
   redemption: MoneyString;
 }
 export interface ScenarioState {
+  version: ScenarioVersion;
   step: number;
   balances: Balances;
   payoutApproved: boolean;
@@ -40,7 +43,7 @@ export interface ScenarioState {
 }
 
 const MILLION = 100_000_000n;
-export const OPENING_BALANCES: Balances = {
+export const LEGACY_OPENING_BALANCES: Balances = {
   cash: 300n * MILLION,
   fund: 1_700n * MILLION,
   pending: 0n,
@@ -49,21 +52,37 @@ export const OPENING_BALANCES: Balances = {
   plannedPayout: 450n * MILLION,
   redemption: 200n * MILLION,
 };
-export const ACTIONS: readonly { type: ActionType; role: Role; label: string; result: string }[] = [
-  { type: "request_redemption", role: "issuer", label: "Request $200m fund cash", result: "Issuer requested $200m. Balances have not changed." },
-  { type: "accept_redemption", role: "fund", label: "Accept fund request", result: "Fund operator accepted the request. Bank cash remains $300m." },
-  { type: "process_redemption", role: "fund", label: "Process $200m redemption", result: "Fund holdings fell to $1.5bn. $200m proceeds are pending." },
-  { type: "confirm_proceeds", role: "bank", label: "Confirm incoming $200m", result: "Bank confirmed receipt. Available cash is $500m." },
-  { type: "approve_payouts", role: "issuer", label: "Approve $450m payouts", result: "Issuer approved payouts. Available cash is unchanged." },
-  { type: "confirm_payouts", role: "bank", label: "Confirm completed payouts", result: "Bank confirmed payouts. Cash is $50m and obligations are $1.55bn." },
-];
-
-export function initialState(): ScenarioState {
-  return { step: 0, balances: { ...OPENING_BALANCES }, payoutApproved: false, bankDelayed: false };
+export const OPENING_BALANCES: Balances = {
+  ...LEGACY_OPENING_BALANCES,
+  requiredBuffer: 0n,
+  redemption: 150n * MILLION,
+};
+export function openingBalances(version: ScenarioVersion): Balances {
+  return version === 1 ? { ...LEGACY_OPENING_BALANCES } : { ...OPENING_BALANCES };
 }
 
-export function nextAction(step: number) {
-  return ACTIONS[step] ?? null;
+export function actionsForVersion(version: ScenarioVersion): readonly ActionDefinition[] {
+  const redemption = version === 1 ? "$200m" : "$150m";
+  const fundAfter = version === 1 ? "$1.5bn" : "$1.55bn";
+  const cashAfter = version === 1 ? "$500m" : "$450m";
+  const closingCash = version === 1 ? "$50m" : "$0m";
+  return [
+    { type: "request_redemption", role: "issuer", label: `Request ${redemption} fund cash`, result: `Issuer requested ${redemption}. Balances have not changed.` },
+    { type: "accept_redemption", role: "fund", label: "Accept fund request", result: "Fund operator accepted the request. Bank cash remains $300m." },
+    { type: "process_redemption", role: "fund", label: `Process ${redemption} redemption`, result: `Fund holdings fell to ${fundAfter}. ${redemption} proceeds are pending.` },
+    { type: "confirm_proceeds", role: "bank", label: `Confirm incoming ${redemption}`, result: `Bank confirmed receipt. Available cash is ${cashAfter}.` },
+    { type: "approve_payouts", role: "issuer", label: "Approve $450m payouts", result: "Issuer approved payouts. Available cash is unchanged." },
+    { type: "confirm_payouts", role: "bank", label: "Confirm completed payouts", result: `Bank confirmed payouts. Cash is ${closingCash} and obligations are $1.55bn.` },
+  ] as const satisfies readonly ActionDefinition[];
+}
+export const ACTIONS = actionsForVersion(2);
+
+export function initialState(version: ScenarioVersion = 2): ScenarioState {
+  return { version, step: 0, balances: openingBalances(version), payoutApproved: false, bankDelayed: false };
+}
+
+export function nextAction(step: number, version: ScenarioVersion = 2) {
+  return actionsForVersion(version)[step] ?? null;
 }
 
 export function serializeBalances(b: Balances): SerializedBalances {
@@ -88,7 +107,7 @@ export class DomainError extends Error {
 }
 
 export function applyAction(state: ScenarioState, action: ActionType, role: Role): ScenarioState {
-  const expected = nextAction(state.step);
+  const expected = nextAction(state.step, state.version);
   if (!expected || expected.type !== action) throw new DomainError("WRONG_STEP", "This action is not the next step.");
   if (expected.role !== role) throw new DomainError("WRONG_ROLE", "This role cannot perform the current action.", 403);
   if (action === "confirm_proceeds" && state.bankDelayed) throw new DomainError("BANK_DELAYED", "Bank confirmation is delayed. Pending proceeds are not available cash.");
@@ -97,7 +116,7 @@ export function applyAction(state: ScenarioState, action: ActionType, role: Role
   if (action === "process_redemption") { b.fund -= b.redemption; b.pending += b.redemption; }
   if (action === "confirm_proceeds") { b.pending -= b.redemption; b.cash += b.redemption; }
   if (action === "approve_payouts") {
-    if (b.cash < b.plannedPayout + b.requiredBuffer) throw new DomainError("INSUFFICIENT_CASH", "Payouts need $500m available cash, including the $50m buffer.");
+    if (b.cash < b.plannedPayout + b.requiredBuffer) throw new DomainError("INSUFFICIENT_CASH", `Payouts need ${formatMoney(b.plannedPayout + b.requiredBuffer)} confirmed bank cash${b.requiredBuffer ? `, including the ${formatMoney(b.requiredBuffer)} buffer` : ""}.`);
     payoutApproved = true;
   }
   if (action === "confirm_payouts") {
@@ -113,6 +132,6 @@ export function toWireState(state: ScenarioState) {
   return { ...state, balances: serializeBalances(state.balances) };
 }
 
-export function fromWireState(value: { step: number; balances: SerializedBalances; payoutApproved: boolean; bankDelayed: boolean }): ScenarioState {
-  return { ...value, balances: parseBalances(value.balances) };
+export function fromWireState(value: { version?: ScenarioVersion; step: number; balances: SerializedBalances; payoutApproved: boolean; bankDelayed: boolean }): ScenarioState {
+  return { ...value, version: value.version ?? 1, balances: parseBalances(value.balances) };
 }

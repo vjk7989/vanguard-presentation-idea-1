@@ -9,110 +9,116 @@ import { Sheet } from "@/components/ui/sheet";
 import { Architecture } from "@/components/architecture";
 import { Disclaimer, ThemeToggle } from "@/components/common";
 import { formatMoney, type Role } from "@/lib/domain";
+import { nextCaseRole, type CasePreset, type DemoCase } from "@/lib/demo-cases";
 import type { Snapshot, WireEvent } from "@/lib/store";
 import { useRoom } from "@/hooks/use-room";
 
-const names: Record<Role, string> = { issuer: "Issuer treasury", fund: "Fund operations", bank: "Bank operations" };
+const names: Record<Role, string> = { issuer: "Issuer Treasury", fund: "Fund Operations", bank: "Banking Operations" };
+const caseStatus: Record<DemoCase["status"], string> = {
+  opened: "Waiting for Fund", fund_reviewed: "Waiting for Bank", bank_acknowledged: "Bank acknowledged",
+};
+
+function InvitePanel({ snapshot: s, url, onCopy }: {
+  snapshot: Snapshot; url: string; onCopy: () => void;
+}) {
+  return <section className="rounded-xl border border-border bg-card p-5" aria-label="Invite role devices">
+    <div className="flex items-start justify-between gap-4"><div><h2 className="text-lg font-semibold">Invite the three role devices</h2><p className="mt-1 max-w-md text-sm leading-6 text-muted-foreground">Participants scan once, then choose an available role. Other Chrome profiles and devices join independently.</p></div><QrCode size={21} className="shrink-0 text-primary" aria-hidden="true" /></div>
+    <div id="join-qr" className="mt-5 flex flex-col items-start gap-3 border-t border-border pt-5">
+      <div className="rounded-lg border border-border bg-white p-3 text-black"><QRCodeSVG value={url} size={188} marginSize={2} bgColor="#ffffff" fgColor="#111111" aria-label="QR code to join this demo room" /></div>
+      <div className="min-w-0"><p className="font-mono text-sm font-semibold">ROOM {s.code}</p><p className="mt-2 max-w-sm break-all text-xs leading-5 text-muted-foreground">{url}</p><button type="button" onClick={onCopy} className="mt-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-primary"><Copy size={15} aria-hidden="true" /> Copy join link</button></div>
+    </div>
+  </section>;
+}
+
+function DeviceRoster({ snapshot: s, disabled, onKick }: { snapshot: Snapshot; disabled: boolean; onKick: (id: string) => void }) {
+  return <section className="rounded-xl border border-border bg-card p-5" aria-label="Connected devices">
+    <div className="flex flex-wrap items-end justify-between gap-2"><div><h2 className="text-lg font-semibold">Devices in this room</h2><p className="mt-1 text-sm text-muted-foreground">Presence refreshes every two seconds.</p></div><strong className="font-mono text-2xl">{s.presence.online} <span className="text-sm font-normal text-muted-foreground">online</span></strong></div>
+    <p className="mt-3 text-xs text-muted-foreground">{s.presence.admins} admins · {s.presence.waiting} choosing a role · {s.presence.assigned} in roles</p>
+    <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-w-0 items-center justify-between gap-3 border-b border-border py-3 text-sm"><div className="min-w-0"><span className="block truncate font-mono font-semibold">{device.label}</span><span className="text-xs text-muted-foreground">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button variant="ghost" size="sm" onClick={() => onKick(device.id)} disabled={disabled} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
+  </section>;
+}
+
+function BalanceStrip({ snapshot: s }: { snapshot: Snapshot }) {
+  const b = s.state.balances;
+  const items = [
+    ["Bank cash", b.cash], ["Fund holdings", b.fund], ["Pending proceeds", b.pending], ["Holder obligations", b.obligations],
+  ];
+  const verificationPending = BigInt(b.pending) > 0n;
+  return <section aria-label="Friday reserve position" className="rounded-xl border border-border bg-card p-5 sm:p-6">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Friday reserve position</h2><p className="mt-1 text-xs text-muted-foreground">Issuer and financial parties retain their own authoritative records.</p></div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${verificationPending ? "bg-amber-100 text-amber-950 dark:bg-amber-900/40 dark:text-amber-100" : "bg-emerald-100 text-emerald-950 dark:bg-emerald-900/40 dark:text-emerald-100"}`}>{verificationPending ? "Bank verification pending" : "Illustrative coverage aligned"}</span></div>
+    <dl className="mt-5 grid grid-cols-2 gap-x-5 gap-y-5 border-t border-border pt-5 lg:grid-cols-4">{items.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 whitespace-nowrap font-mono text-xl font-semibold tabular-nums sm:text-2xl">{formatMoney(value)}</dd></div>)}</dl>
+    <p className="mt-5 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">{verificationPending ? `${formatMoney(b.pending)} is awaiting bank confirmation. Do not count it as available cash or claim confirmed 1:1 backing yet.` : `Illustrative fund holdings plus confirmed bank cash: ${formatMoney(BigInt(b.fund) + BigInt(b.cash))}. This is not a legal reserve attestation.`}</p>
+  </section>;
+}
+
+function FridayPanel({ snapshot: s, disabled, onTakeover, onControl }: {
+  snapshot: Snapshot; disabled: boolean; onTakeover: () => void; onControl: (name: string) => void;
+}) {
+  const b = s.state.balances;
+  return <section className="rounded-xl border border-border bg-card p-5 sm:p-6" aria-label="Friday scenario control">
+    <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Main Friday action</h2><span className="font-mono text-sm text-muted-foreground">{s.state.step}/6</span></div>
+    <p className="mt-6 text-xs font-semibold text-primary">{s.next ? `${names[s.next.role]} acts next` : "Scenario complete"}</p>
+    <p className="mt-2 text-xl font-semibold">{s.next?.label ?? "All six financial steps are complete."}</p>
+    <p className="mt-4 text-sm leading-6 text-muted-foreground">{s.state.step === 3 ? `${formatMoney(b.redemption)} of fund proceeds are pending. Bank cash remains ${formatMoney(b.cash)} until Bank confirms receipt.` : `Payout approval requires ${formatMoney(BigInt(b.plannedPayout) + BigInt(b.requiredBuffer))} confirmed bank cash.`}</p>
+    {s.next && <Button className="mt-6 w-full" onClick={onTakeover} disabled={disabled || s.status !== "active" || (s.state.bankDelayed && s.next.type === "confirm_proceeds")}>Act on behalf of {names[s.next.role]} <ArrowRight size={16} aria-hidden="true" /></Button>}
+    <div className="mt-6 border-t border-border pt-4"><h3 className="text-sm font-semibold">Presenter exceptions</h3><div className="mt-3 flex flex-wrap gap-2"><Button variant="secondary" size="sm" onClick={() => onControl(s.state.bankDelayed ? "release_bank" : "delay_bank")} disabled={disabled || s.state.step !== 3}>{s.state.bankDelayed ? "Release bank delay" : "Delay bank"}</Button><Button variant="secondary" size="sm" onClick={() => onControl("repeat_bank")} disabled={disabled || s.state.step < 4}>Repeat bank notice</Button></div></div>
+  </section>;
+}
+
+function PracticePanel({ snapshot: s, disabled, onCreate, onAdvance }: {
+  snapshot: Snapshot; disabled: boolean; onCreate: (preset: CasePreset) => void; onAdvance: (item: DemoCase) => void;
+}) {
+  const [preset, setPreset] = useState<CasePreset>("10m");
+  const open = s.cases.filter(item => item.status !== "bank_acknowledged");
+  return <section className="rounded-xl border border-border bg-card p-5 sm:p-6" aria-label="Practice coordination cases">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Practice coordination</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">Repeatable issuer → fund → bank messages. No reserve balance changes.</p></div><span className="rounded-full bg-secondary px-3 py-1 font-mono text-xs">{s.cases.length}/20 cases</span></div>
+    <div className="mt-5 flex flex-wrap items-end gap-2"><label className="text-xs font-semibold" htmlFor="admin-case-preset">Display amount<select id="admin-case-preset" className="mt-1 block h-11 rounded-md border border-border bg-background px-3 text-sm" value={preset} onChange={event => setPreset(event.target.value as CasePreset)}><option value="5m">$5m</option><option value="10m">$10m</option><option value="25m">$25m</option></select></label><Button variant="secondary" onClick={() => onCreate(preset)} disabled={disabled || s.status !== "active" || s.cases.length >= 20}>Open as Issuer</Button></div>
+    <div className="mt-5 max-h-64 overflow-y-auto border-t border-border">{open.length ? open.map(item => {
+      const role = nextCaseRole(item.status);
+      return <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-3 text-sm"><div><p className="font-mono font-semibold">{item.reference} · {formatMoney(item.amount)}</p><p className="mt-1 text-xs text-muted-foreground">{caseStatus[item.status]} · Practice only</p></div>{role && <Button size="sm" variant="ghost" disabled={disabled || s.status !== "active"} onClick={() => onAdvance(item)}>Advance as {names[role]}</Button>}</div>;
+    }) : <p className="py-5 text-sm text-muted-foreground">No open practice cases. Ask Issuer to send a request, or open one here.</p>}</div>
+  </section>;
+}
+
+function EventFeed({ events, onSelect, code }: { events: WireEvent[]; onSelect: (event: WireEvent) => void; code: string }) {
+  return <section className="rounded-xl border border-border bg-card" aria-label="Accepted event timeline"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-4"><div><h2 className="text-lg font-semibold">Accepted activity</h2><p className="mt-1 text-xs text-muted-foreground">Only accepted server actions enter this timeline.</p></div><Link href={`/results/${code}`} className="inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-primary">Full replay <ExternalLink size={15} aria-hidden="true" /></Link></div>
+    <div className="max-h-80 overflow-y-auto">{events.length ? [...events].reverse().slice(0, 15).map(event => <button key={event.id} type="button" onClick={() => onSelect(event)} className="flex min-h-14 w-full items-center gap-3 border-b border-border px-5 py-3 text-left hover:bg-muted focus-visible:bg-muted"><span className="font-mono text-xs text-muted-foreground">{String(event.index).padStart(2, "0")}</span><span className="min-w-0 flex-1 text-sm leading-5">{event.label}</span><span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">{new Date(event.createdAt).toLocaleTimeString()}</span></button>) : <p className="px-5 py-7 text-sm text-muted-foreground">Start the scenario, then ask a role to press its highlighted action.</p>}</div>
+  </section>;
+}
 
 export function PresenterDashboard({ code }: { code: string }) {
-  const room = useRoom(code);
-  const { snapshot: s, connected, busy, error, animatedEvent, post } = room;
+  const { snapshot: s, connected, busy, error, animatedEvent, post } = useRoom(code);
   const [selected, setSelected] = useState<WireEvent | null>(null);
   const [localJoinUrl, setLocalJoinUrl] = useState("");
   const [showQr, setShowQr] = useState(false);
   const [notice, setNotice] = useState("");
   useEffect(() => { queueMicrotask(() => setLocalJoinUrl(`${location.origin}/join/${code}`)); }, [code]);
   const joinUrl = s?.joinUrl ?? localJoinUrl;
+  const disabled = !connected || busy;
   async function control(name: string, extra: object = {}) { try { await post("controls", { control: name, ...extra }); } catch {} }
-  async function takeover() {
-    if (!s?.next) return;
-    try { await post("actions", { action: s.next.type, onBehalfOf: s.next.role }); } catch {}
-  }
-  async function kick(sessionId: string) {
-    try { await post("sessions/kick", { sessionId }); setNotice("Device removed. It can rejoin from the same QR link."); } catch {}
-  }
-  async function copyJoin() {
-    try { await navigator.clipboard.writeText(joinUrl); setNotice("Join link copied."); }
-    catch { setNotice("Could not copy the link. Open it from the QR panel instead."); }
-  }
+  async function takeover() { if (s?.next) try { await post("actions", { action: s.next.type, onBehalfOf: s.next.role }); } catch {} }
+  async function kick(id: string) { try { await post("sessions/kick", { sessionId: id }); setNotice("Device removed. It can rejoin with the same QR link."); } catch {} }
+  async function copyJoin() { try { await navigator.clipboard.writeText(joinUrl); setNotice("Join link copied."); } catch { setNotice("Copy failed. Use the visible join link."); } }
+  async function createCase(preset: CasePreset) { try { const result = await post<{ message?: string }>("cases", { preset, onBehalfOf: "issuer" }); setNotice(result.message ?? "Practice request opened."); } catch {} }
+  async function advance(item: DemoCase) { const role = nextCaseRole(item.status); if (!role) return; try { const result = await post<{ message?: string }>(`cases/${item.id}/actions`, { action: role === "fund" ? "fund_review" : "bank_acknowledge", onBehalfOf: role }); setNotice(result.message ?? "Practice case updated."); } catch {} }
 
-  if (!s) return <Shell><div className="mx-auto max-w-6xl p-8"><div className="h-12 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}</div></Shell>;
-  const actionsDisabled = !connected || busy;
-  const join = <div className="rounded-xl border border-border bg-card p-5">
-    <div className="flex items-start justify-between gap-3"><div><h2 className="font-semibold">Invite role devices</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">Show the QR when your participants are ready.</p></div><QrCode size={22} className="text-primary" /></div>
-    <Button className="mt-5 w-full" onClick={() => setShowQr(value => !value)} aria-expanded={showQr} aria-controls="join-qr">{showQr ? "Hide QR" : "Show QR"}</Button>
-    {showQr && <div id="join-qr" className="mt-5 flex flex-col items-center gap-3 border-t border-border pt-5 text-center">
-      {joinUrl && <div className="rounded-lg bg-white p-3 text-black"><QRCodeSVG value={joinUrl} size={176} marginSize={2} bgColor="#ffffff" fgColor="#111111" aria-label="QR code to join this room" /></div>}
-      <p className="font-mono text-sm">ROOM {s.code}</p>
-      <p className="max-w-full break-all text-xs text-muted-foreground">{joinUrl}</p>
-      <button onClick={copyJoin} className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-primary"><Copy size={16} /> Copy join link</button>
-    </div>}
-  </div>;
-  const roles = <div className="space-y-2">{s.roles.map(item => <div key={item.role} className="flex min-h-12 items-center justify-between gap-3 border-b border-border py-2 text-sm">
-    <div><span className="font-semibold">{names[item.role]}</span><span className="ml-2 text-muted-foreground">{item.claimed ? item.connected ? "Connected" : "Disconnected" : "Available"}</span></div>
-  </div>)}</div>;
-  const presence = <section className="rounded-xl border border-border bg-card p-5" aria-label="Connected devices">
-    <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">Devices in the room</h2><p className="mt-1 text-sm text-muted-foreground">Live presence updates every two seconds.</p></div><div className="font-mono text-2xl font-semibold">{s.presence.online} <span className="text-sm font-normal text-muted-foreground">online</span></div></div>
-    <p className="mt-4 text-sm text-muted-foreground">{s.presence.admins} admin · {s.presence.waiting} choosing a role · {s.presence.assigned} in roles</p>
-    <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-h-14 flex-col items-stretch gap-2 border-b border-border py-3 text-sm sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><span className="font-mono font-semibold">{device.label}</span><span className="block text-muted-foreground sm:ml-2 sm:inline">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button className="w-full sm:w-auto" size="sm" variant="ghost" disabled={actionsDisabled} onClick={() => kick(device.id)} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
-  </section>;
-  return <Shell>
-    <header className="border-b border-border"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8">
-      <div className="flex items-center gap-5"><div className="text-sm font-bold tracking-tight">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><span className="hidden font-mono text-sm text-muted-foreground sm:inline">{s.code}</span></div>
-      <div className="flex items-center gap-3"><span className={`inline-flex items-center gap-1 text-xs ${connected ? "text-foreground" : "text-destructive"}`}>{connected ? <Wifi size={15} /> : <WifiOff size={15} />}{connected ? "Connected" : "Offline"}</span><ThemeToggle /></div>
-    </div></header>
-    <main className="mx-auto max-w-[1440px] px-5 py-5 sm:px-8">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
-        <div><p className="text-sm text-muted-foreground">Friday customer redemptions · Run {s.runNumber}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Operations control room</h1></div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
-          {s.status === "lobby" ? <Button className="col-span-2 w-full sm:w-auto" onClick={() => control("start")} disabled={actionsDisabled}>Start scenario <ArrowRight size={16} /></Button> : <>
-            {s.status === "active" ? <Button className="w-full sm:w-auto" variant="secondary" onClick={() => control("pause")} disabled={actionsDisabled}><Pause size={16} /> Pause</Button> : s.status === "paused" ? <Button className="w-full sm:w-auto" onClick={() => control("resume")} disabled={actionsDisabled}><Play size={16} /> Resume</Button> : null}
-            <Button className="w-full sm:w-auto" variant="secondary" onClick={() => control("reset")} disabled={actionsDisabled}><RotateCcw size={16} /> Restart</Button>
-            <Button className="col-span-2 w-full sm:w-auto" variant="danger" onClick={() => control("end")} disabled={actionsDisabled || s.status === "ended"}>End run</Button>
-          </>}
-        </div>
+  if (!s) return <div className="min-h-screen bg-background p-6 text-foreground"><div className="mx-auto max-w-6xl"><div className="h-10 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-5 text-destructive">{error}</p>}</div></div>;
+  return <div className="flex min-h-screen flex-col bg-background text-foreground"><a href="#presenter-main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-3">Skip to main content</a>
+    <header className="border-b border-border bg-card"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8"><div className="flex items-center gap-5"><div className="text-sm font-bold tracking-tight">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><span className="hidden font-mono text-xs text-muted-foreground sm:inline">{s.code} · RUN {s.runNumber}</span></div><div className="flex items-center gap-3"><span className={`inline-flex items-center gap-1 text-xs ${connected ? "text-foreground" : "text-destructive"}`}>{connected ? <Wifi size={15} aria-hidden="true" /> : <WifiOff size={15} aria-hidden="true" />}{connected ? "Connected" : "Offline"}</span><ThemeToggle /></div></div></header>
+    <main id="presenter-main" className="mx-auto w-full max-w-[1440px] flex-1 space-y-5 px-4 py-5 sm:px-8">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-muted-foreground">Friday customer redemptions · {s.scenarioVersion === 2 ? "Deck-aligned" : "Original"} run {s.runNumber}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Operations control room</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">Guide Issuer, Fund and Bank through one real scenario path, then reveal what a shared workflow record changes.</p></div><div className="flex w-full flex-wrap gap-2 sm:w-auto"><Button variant="secondary" onClick={() => setShowQr(value => !value)} aria-expanded={showQr}><QrCode size={16} aria-hidden="true" /> {showQr ? "Hide QR" : "Show QR"}</Button>{s.status === "lobby" ? <Button onClick={() => control("start")} disabled={disabled}>Start scenario <ArrowRight size={16} aria-hidden="true" /></Button> : <>{s.status === "active" ? <Button variant="secondary" onClick={() => control("pause")} disabled={disabled}><Pause size={16} aria-hidden="true" /> Pause</Button> : s.status === "paused" ? <Button onClick={() => control("resume")} disabled={disabled}><Play size={16} aria-hidden="true" /> Resume</Button> : null}<Button variant="secondary" onClick={() => control("reset")} disabled={disabled}><RotateCcw size={16} aria-hidden="true" /> Restart</Button><Button variant="danger" onClick={() => control("end")} disabled={disabled || s.status === "ended"}>End run</Button></>}</div></div>
+      {error && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">{error}{!connected && " Actions are disabled until the connection returns."}</p>}
+      {notice && <p role="status" className="rounded-lg bg-secondary p-3 text-sm">{notice}</p>}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 sm:px-5"><div className="flex flex-wrap items-center gap-3 text-sm font-semibold"><span className={s.mode === "conventional" ? "text-foreground" : "text-muted-foreground"}>Without blockchain</span><Switch.Root checked={s.mode === "ledger"} onCheckedChange={checked => control("set_mode", { mode: checked ? "ledger" : "conventional" })} disabled={disabled} aria-label="Show shared workflow ledger" className="relative h-7 w-12 rounded-full bg-secondary data-[state=checked]:bg-primary"><Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" /></Switch.Root><span className={s.mode === "ledger" ? "text-foreground" : "text-muted-foreground"}>With blockchain</span></div><p className="text-xs text-muted-foreground">Same actions and balances. Different record-sharing view.</p></div>
+      <div className={showQr ? "grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(280px,.34fr)]" : ""}>
+        <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card" aria-label="Live workflow diagram"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-4"><div><h2 className="text-lg font-semibold">Live workflow</h2><p className="mt-1 text-xs text-muted-foreground">Accepted device actions appear here. Refresh never replays old animation.</p></div><span className="font-mono text-xs text-muted-foreground">{s.presence.assigned}/3 roles assigned</span></div><Architecture snapshot={s} animatedEvent={animatedEvent} /></section>
+        {showQr && <InvitePanel snapshot={s} url={joinUrl} onCopy={copyJoin} />}
       </div>
-      {error && <p role="alert" className="mb-4 rounded-md border border-destructive p-3 text-sm text-destructive">{error}{!connected && " Actions are disabled until the connection returns."}</p>}
-      {notice && <p role="status" className="mb-4 rounded-md bg-secondary p-3 text-sm">{notice}</p>}
-      {s.status === "lobby" ? <div className="grid gap-8 lg:grid-cols-[320px_1fr]">
-        {join}<div className="space-y-5">{presence}<section><h2 className="mb-3 text-lg font-semibold">Role positions</h2>{roles}<p className="mt-5 max-w-xl text-sm leading-6 text-muted-foreground">Each participant chooses one role. You can start with an empty position and perform its action from this laptop.</p><div className="mt-7 border-t border-border pt-5"><h3 className="font-semibold">Presenter guide</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Ask who owns each confirmation. After fund processing, point out that $200m is pending and bank cash remains $300m. Switch views without changing the financial state.</p></div></section></div>
-      </div> : <>
-        <div className="mb-6 grid gap-5 md:grid-cols-[280px_1fr]">{join}<div className="space-y-5">{presence}<div><h2 className="text-lg font-semibold">Role positions</h2>{roles}<p className="mt-3 text-sm text-muted-foreground">Kicked participants can scan the QR code or tap Rejoin on their device.</p></div></div></div>
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border-y border-border py-3">
-          <div className="flex items-center gap-3 text-sm font-semibold"><span className={s.mode === "conventional" ? "text-foreground" : "text-muted-foreground"}>Without blockchain</span><Switch.Root checked={s.mode === "ledger"} onCheckedChange={checked => control("set_mode", { mode: checked ? "ledger" : "conventional" })} disabled={actionsDisabled} aria-label="Show shared workflow ledger" className="relative h-7 w-12 rounded-full bg-secondary data-[state=checked]:bg-primary"><Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" /></Switch.Root><span className={s.mode === "ledger" ? "text-foreground" : "text-muted-foreground"}>With blockchain</span></div>
-          <p className="text-xs text-muted-foreground">Same transaction and controls. Different record-sharing design.</p>
-        </div>
-        <BalanceStrip balances={s.state.balances} />
-        <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(300px,.75fr)]">
-          <section className="overflow-hidden rounded-xl border border-border bg-card"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div><h2 className="text-lg font-semibold">Architecture</h2><p className="text-xs text-muted-foreground">{s.mode === "ledger" ? "Linked workflow events · financial parties retain their records" : "Separate issuer, fund and bank records · conventional reconciliation"}</p></div><span className="text-xs text-muted-foreground">Dashed: message · Solid: confirmed cash</span></div><Architecture mode={s.mode} step={s.state.step} animatedEvent={animatedEvent} /></section>
-          <section className="rounded-xl border border-border bg-card p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Current step</h2><span className="font-mono text-sm text-muted-foreground">{s.state.step}/6</span></div>
-            <p className="mt-6 text-sm font-semibold text-muted-foreground">Next actor</p><p className="mt-1 text-xl font-semibold">{s.next ? names[s.next.role] : "Scenario complete"}</p>
-            <p className="mt-4 text-sm leading-6">{s.next?.label ?? "All six steps are complete. Review the results."}</p>
-            {s.state.bankDelayed && s.state.step === 3 && <p className="mt-4 rounded-md bg-secondary p-3 text-sm">Bank confirmation is delayed. $200m remains pending. Available cash is $300m.</p>}
-            {s.state.step === 3 && <p className="mt-3 text-sm text-muted-foreground">Payout approval needs $500m available cash, including the $50m buffer.</p>}
-            {s.next && <Button className="mt-6 w-full" onClick={takeover} disabled={actionsDisabled || s.status !== "active" || (s.state.bankDelayed && s.next.type === "confirm_proceeds")}>Act on behalf of {names[s.next.role]}</Button>}
-            <div className="mt-6 border-t border-border pt-4"><h3 className="mb-3 text-sm font-semibold">Presenter exceptions</h3><div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" onClick={() => control(s.state.bankDelayed ? "release_bank" : "delay_bank")} disabled={actionsDisabled || s.state.step !== 3}>{s.state.bankDelayed ? "Release bank delay" : "Delay bank"}</Button>
-              <Button size="sm" variant="secondary" onClick={() => control("repeat_bank")} disabled={actionsDisabled || s.state.step < 4}>Repeat bank notice</Button>
-            </div></div>
-          </section>
-        </div>
-        <section className="mt-5 rounded-xl border border-border bg-card"><div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="text-lg font-semibold">Event timeline</h2><Link className="inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-primary" href={`/results/${code}`}>Results and replay <ExternalLink size={15} /></Link></div>
-          <div className="max-h-72 overflow-y-auto">{s.events.length ? [...s.events].reverse().map(event => <button key={event.id} onClick={() => setSelected(event)} className="flex min-h-14 w-full items-center gap-4 border-b border-border px-5 py-3 text-left hover:bg-muted focus-visible:bg-muted"><span className="font-mono text-xs text-muted-foreground">{String(event.index).padStart(2, "0")}</span><span className="min-w-0 flex-1 truncate text-sm">{event.label}</span><span className="hidden text-xs text-muted-foreground sm:inline">{new Date(event.createdAt).toLocaleTimeString()}</span></button>) : <p className="px-5 py-8 text-sm text-muted-foreground">Events will appear after the first action.</p>}</div>
-        </section>
-      </>}
+      <BalanceStrip snapshot={s} />
+      <div className="grid gap-5 lg:grid-cols-2"><FridayPanel snapshot={s} disabled={disabled} onTakeover={takeover} onControl={name => control(name)} /><PracticePanel snapshot={s} disabled={disabled} onCreate={createCase} onAdvance={advance} /></div>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,.8fr)]"><EventFeed events={s.events} onSelect={setSelected} code={code} /><DeviceRoster snapshot={s} disabled={disabled} onKick={kick} /></div>
     </main>
-    <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)} title="Event detail">{selected && <div className="space-y-5 text-sm"><p className="text-base leading-7">{selected.label}</p><dl className="grid grid-cols-[7rem_1fr] gap-y-3 border-y border-border py-5"><dt className="text-muted-foreground">Actor</dt><dd className="capitalize">{selected.actor}{selected.onBehalfOf ? ` on behalf of ${selected.onBehalfOf}` : ""}</dd><dt className="text-muted-foreground">Time</dt><dd>{new Date(selected.createdAt).toLocaleString()}</dd><dt className="text-muted-foreground">Amount</dt><dd>{selected.amount ? formatMoney(selected.amount) : "No cash movement"}</dd></dl><details className="rounded-md border border-border p-4"><summary className="cursor-pointer font-semibold">Technical identifiers</summary><dl className="mt-4 space-y-3 break-all font-mono text-xs"><div><dt className="text-muted-foreground">Simulated reference</dt><dd>{selected.reference ?? "None"}</dd></div><div><dt className="text-muted-foreground">Simulated ledger index</dt><dd>{selected.index}</dd></div><div><dt className="text-muted-foreground">Previous hash</dt><dd>{selected.previousHash}</dd></div><div><dt className="text-muted-foreground">Event hash</dt><dd>{selected.hash}</dd></div></dl></details></div>}</Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)} title="Event detail">{selected && <div className="space-y-5 text-sm"><p className="text-base leading-7">{selected.label}</p><dl className="grid grid-cols-[7rem_1fr] gap-y-3 border-y border-border py-5"><dt className="text-muted-foreground">Actor</dt><dd className="capitalize">{selected.actor}{selected.onBehalfOf ? ` on behalf of ${selected.onBehalfOf}` : ""}</dd><dt className="text-muted-foreground">Time</dt><dd>{new Date(selected.createdAt).toLocaleString()}</dd><dt className="text-muted-foreground">Amount</dt><dd>{selected.amount ? formatMoney(selected.amount) : "No cash movement"}</dd></dl><details className="rounded-md border border-border p-4"><summary className="cursor-pointer font-semibold">Technical identifiers</summary><dl className="mt-4 space-y-3 break-all font-mono text-xs"><div><dt className="text-muted-foreground">Practice or scenario reference</dt><dd>{selected.reference ?? "None"}</dd></div><div><dt className="text-muted-foreground">Event index</dt><dd>{selected.index}</dd></div><div><dt className="text-muted-foreground">Previous hash</dt><dd>{selected.previousHash}</dd></div><div><dt className="text-muted-foreground">Event hash</dt><dd>{selected.hash}</dd></div></dl></details></div>}</Sheet>
     <Disclaimer />
-  </Shell>;
-}
-
-function Shell({ children }: { children: React.ReactNode }) { return <div className="flex min-h-screen flex-col bg-background text-foreground">{children}</div>; }
-
-function BalanceStrip({ balances }: { balances: Snapshot["state"]["balances"] }) {
-  const items = [
-    ["Available bank cash", balances.cash], ["Fund holdings", balances.fund], ["Pending proceeds", balances.pending],
-    ["Issuer obligations", balances.obligations], ["Required cash buffer", balances.requiredBuffer],
-  ];
-  return <section aria-label="Financial balances" className="grid grid-cols-2 gap-x-5 gap-y-4 border-b border-border pb-5 sm:grid-cols-3 lg:grid-cols-5">{items.map(([label, value]) => <div key={label} className="min-w-0"><div className="text-xs leading-5 text-muted-foreground">{label}</div><div className="mt-1 whitespace-nowrap font-mono text-xl font-semibold tabular-nums">{formatMoney(value)}</div></div>)}</section>;
+  </div>;
 }

@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
   },
   allowedDevOrigins: ["127.0.0.1"],
   devIndicators: false,
+  experimental: { cpus: 2 },
   turbopack: {
     root: process.cwd(),
     rules: {

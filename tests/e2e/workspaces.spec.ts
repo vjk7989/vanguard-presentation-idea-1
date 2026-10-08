@@ -204,7 +204,7 @@ test("admin QR advertises the canonical cross-device URL and fits phone widths",
     await page.goto(`/presenter/${CODE}`);
     await expect(page.getByRole("heading", { level: 1, name: "Operations control room" })).toBeVisible();
     await page.getByRole("button", { name: "Show QR" }).click();
-    await expect(page.getByLabel("QR code to join this room")).toBeVisible();
+    await expect(page.getByRole("img", { name: "QR code to join this demo room" })).toBeVisible();
     await expect(page.getByText(joinUrl, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy join link" })).toBeVisible();
     await assertNoHorizontalOverflow(page);

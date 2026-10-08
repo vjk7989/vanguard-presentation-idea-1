@@ -154,6 +154,61 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     await expect(store.completeMockItem(created.code, treasury, randomUUID(), created.runId, "iss-pay-02")).rejects.toThrow("earlier run");
   });
 
+  it("handles ten practice cases, retries, ordering, pause, and reset without moving money", async () => {
+    const admin = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(admin, randomUUID());
+    createdCodes.push(created.code);
+    const fund = `participant-${randomUUID()}`;
+    const bank = `participant-${randomUUID()}`;
+    await store.joinRoom(created.code, fund, created.runId);
+    await store.joinRoom(created.code, bank, created.runId);
+    await store.claimRole(created.code, fund, randomUUID(), created.runId, "fund");
+    await store.claimRole(created.code, bank, randomUUID(), created.runId, "bank");
+    await store.controlRoom(created.code, admin, randomUUID(), created.runId, "start");
+    const opening = await store.getSnapshot(created.code, admin);
+    const requestId = randomUUID();
+    const [first, retry] = await Promise.all([
+      store.createDemoCase(created.code, admin, requestId, created.runId, "10m", "issuer"),
+      store.createDemoCase(created.code, admin, requestId, created.runId, "10m", "issuer"),
+    ]);
+    expect(retry).toEqual(first);
+    for (let index = 1; index < 10; index++) {
+      await store.createDemoCase(created.code, admin, randomUUID(), created.runId, "5m", "issuer");
+    }
+    let current = await store.getSnapshot(created.code, admin);
+    expect(current.cases).toHaveLength(10);
+    expect(current.cases.map(item => item.ordinal)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(current.state.balances).toEqual(opening.state.balances);
+    const caseId = current.cases[0].id;
+    await expect(store.advanceDemoCase(created.code, bank, randomUUID(), created.runId, caseId, "bank_acknowledge"))
+      .rejects.toThrow("Another team");
+    const reviewId = randomUUID();
+    const [review, reviewRetry] = await Promise.all([
+      store.advanceDemoCase(created.code, fund, reviewId, created.runId, caseId, "fund_review"),
+      store.advanceDemoCase(created.code, fund, reviewId, created.runId, caseId, "fund_review"),
+    ]);
+    expect(reviewRetry).toEqual(review);
+    await store.controlRoom(created.code, admin, randomUUID(), created.runId, "pause");
+    await expect(store.advanceDemoCase(created.code, bank, randomUUID(), created.runId, caseId, "bank_acknowledge"))
+      .rejects.toThrow("Start or resume");
+    await store.controlRoom(created.code, admin, randomUUID(), created.runId, "resume");
+    await store.advanceDemoCase(created.code, bank, randomUUID(), created.runId, caseId, "bank_acknowledge");
+    current = await store.getSnapshot(created.code, admin);
+    expect(current.cases[0].status).toBe("bank_acknowledged");
+    expect(current.state.balances).toEqual(opening.state.balances);
+    expect((current.events.at(-1)?.stateAfter as { demoCases: Record<string, string> }).demoCases[current.cases[0].reference]).toBe("bank_acknowledged");
+    const reset = await store.controlRoom(created.code, admin, randomUUID(), created.runId, "reset");
+    const fresh = await store.getSnapshot(created.code, admin);
+    expect(fresh.runId).toBe(reset.runId);
+    expect(fresh.scenarioVersion).toBe(2);
+    expect(fresh.cases).toHaveLength(0);
+    await expect(store.createDemoCase(created.code, admin, randomUUID(), created.runId, "5m", "issuer"))
+      .rejects.toThrow("earlier run");
+    const replay = await store.getRunReplay(created.code, admin, created.runId);
+    expect(replay.cases).toHaveLength(10);
+    expect(replay.events.filter(item => item.type === "case_opened")).toHaveLength(10);
+  });
+
   it("keeps one public demo room and lets a kicked participant join again", async () => {
     const presenter = `presenter-${randomUUID()}`;
     const preview = await store.roomPreview("DEMO01");
