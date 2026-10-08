@@ -28,7 +28,7 @@ See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthr
 - Mutations lock the room row, validate session and run, update state, append an event, save an idempotent response, and increment the revision in one database transaction.
 - Role claims have unique room/role and room/session constraints. Presenter-only controls and role actions are checked on the server.
 - Sessions use random HTTP-only cookie tokens. Only HMAC-SHA-256 token hashes are stored in the database. Mutations validate the `Origin` header against `APP_ORIGIN`.
-- Rooms expire after 24 hours. Vercel Cron invokes the authenticated cleanup route hourly.
+- Rooms become inaccessible after 24 hours. A Hobby-compatible daily Vercel Cron job physically deletes expired rooms at its next run (scheduled for 02:00 UTC, with Hobby's within-the-hour timing).
 
 ## Tests
 
@@ -36,6 +36,6 @@ Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, a
 
 ## Vercel handoff
 
-Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. Run `pnpm migrate` against the chosen Neon database before using the site. Vercel reads `vercel.json` for the hourly cleanup schedule. The production build does not connect to Neon during compilation.
+Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. Run `pnpm migrate` against the chosen Neon database before using the site. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to Neon during compilation.
 
-The repository contains no deployment, Neon provisioning, or live hosted URL. The participant QR entry point is `/join/[code]` on the deployed origin.
+This repository does not provision Neon or include production credentials. The participant QR entry point is `/join/[code]` on the deployed origin.
