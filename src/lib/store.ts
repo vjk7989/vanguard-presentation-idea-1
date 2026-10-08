@@ -10,6 +10,7 @@ import {
 } from "./domain";
 import { tokenHash } from "./security";
 import { hashEvent } from "./ledger";
+import { DEMO_ROOM_CODE } from "./demo";
 
 type Query = postgres.Sql | postgres.TransactionSql;
 type Param = string | number | boolean | null;
@@ -162,13 +163,45 @@ export async function createRoom(token: string, requestId: string) {
   throw new Error("Could not allocate a unique room code.");
 }
 
+/** The public demo uses one stable room; opening the controls only creates a new presenter session. */
+export async function openDemoPresenter(token: string, requestId: string) {
+  await ensureDemoRoom();
+  return db().begin(async tx => {
+    const room = await roomByCode(tx, DEMO_ROOM_CODE, true);
+    const prior = (await rows<RequestRow>(tx, "SELECT response_json FROM mutation_requests WHERE room_id=$1 AND request_id=$2", [room.id, requestId]))[0];
+    if (prior) return jsonObject<{ code: string; runId: string }>(prior.response_json);
+    await rows(tx, `INSERT INTO sessions (id, room_id, token_hash, kind)
+      VALUES ($1,$2,$3,'presenter') ON CONFLICT (token_hash) DO NOTHING`,
+      [randomUUID(), room.id, tokenHash(token)]);
+    const response = { code: DEMO_ROOM_CODE, runId: room.active_run_id };
+    await rows(tx, "INSERT INTO mutation_requests (room_id, request_id, run_id, response_json) VALUES ($1,$2,$3,$4::jsonb)",
+      [room.id, requestId, room.active_run_id, JSON.stringify(response)]);
+    return response;
+  });
+}
+
+async function ensureDemoRoom() {
+  return db().begin(async tx => {
+    const id = randomUUID();
+    const inserted = await rows<{ id: string }>(tx, `INSERT INTO rooms (id, code, status, mode, expires_at)
+      VALUES ($1,$2,'lobby','conventional',now() + interval '100 years')
+      ON CONFLICT (code) DO NOTHING RETURNING id`, [id, DEMO_ROOM_CODE]);
+    if (inserted.length) {
+      const runId = await insertRun(tx, id, 1);
+      await rows(tx, "UPDATE rooms SET active_run_id=$2 WHERE id=$1", [id, runId]);
+    }
+    await rows(tx, "UPDATE rooms SET expires_at=now() + interval '100 years' WHERE code=$1 AND expires_at < now() + interval '1 year'", [DEMO_ROOM_CODE]);
+    return roomByCode(tx, DEMO_ROOM_CODE);
+  });
+}
+
 export async function joinRoom(code: string, token: string, runId: string) {
+  if (code.toUpperCase() === DEMO_ROOM_CODE) await ensureDemoRoom();
   const sql = db();
   return sql.begin(async tx => {
     const room = await roomByCode(tx, code, true);
     const existing = await rows<{ join_run_id: string | null }>(tx, "SELECT join_run_id FROM sessions WHERE room_id=$1 AND token_hash=$2", [room.id, tokenHash(token)]);
     if (existing[0]) return { code: room.code.trim(), runId: existing[0].join_run_id ?? room.active_run_id };
-    if (room.status === "ended") throw new DomainError("ROOM_ENDED", "This room has ended.");
     if (room.active_run_id !== runId) throw new DomainError("STALE_RUN", "This join link has an old run. Refresh the page.");
     await rows(tx, "INSERT INTO sessions (id, room_id, token_hash, kind, join_run_id) VALUES ($1,$2,$3,'participant',$4)",
       [randomUUID(), room.id, tokenHash(token), runId]);
@@ -177,6 +210,7 @@ export async function joinRoom(code: string, token: string, runId: string) {
 }
 
 export async function roomPreview(code: string) {
+  if (code.toUpperCase() === DEMO_ROOM_CODE) await ensureDemoRoom();
   const sql = db();
   const room = await roomByCode(sql, code);
   const claims = await rows<{ role: Role }>(sql, "SELECT role FROM role_claims WHERE room_id=$1", [room.id]);
@@ -236,7 +270,6 @@ async function mutate(code: string, token: string, requestId: string, runId: str
 
 export async function claimRole(code: string, token: string, requestId: string, runId: string, role: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
-    if (room.status !== "lobby" && room.status !== "active") throw new DomainError("ROOM_UNAVAILABLE", "Roles cannot be claimed now.");
     if (session.kind !== "participant") throw new DomainError("PRESENTER_ROLE", "Use a participant device to claim a role.", 403);
     if (!ROLES.includes(role)) throw new DomainError("BAD_ROLE", "Choose an available role.", 400);
     await rows(tx, "INSERT INTO role_claims (room_id, role, session_id) VALUES ($1,$2,$3)", [room.id, role, session.id]);
@@ -247,9 +280,11 @@ export async function claimRole(code: string, token: string, requestId: string, 
 
 export async function releaseRole(code: string, token: string, requestId: string, runId: string, role: Role) {
   return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
-    if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only the presenter can release a role.", 403);
-    await rows(tx, "DELETE FROM role_claims WHERE room_id=$1 AND role=$2", [room.id, role]);
-    const event = await appendEvent(tx, room, run, state, { type: "role_released", actor: "presenter", onBehalfOf: role, label: `Presenter released ${role}.` });
+    if (session.kind !== "presenter") throw new DomainError("PRESENTER_ONLY", "Only the presenter can remove a participant.", 403);
+    const claim = (await rows<{ session_id: string }>(tx, "SELECT session_id FROM role_claims WHERE room_id=$1 AND role=$2", [room.id, role]))[0];
+    if (!claim) throw new DomainError("ROLE_AVAILABLE", "This role is already available.", 409);
+    await rows(tx, "DELETE FROM sessions WHERE id=$1 AND room_id=$2", [claim.session_id, room.id]);
+    const event = await appendEvent(tx, room, run, state, { type: "role_released", actor: "presenter", onBehalfOf: role, label: `Presenter removed ${role}. They may rejoin using the QR link.` });
     return { eventId: event.id };
   });
 }
@@ -297,7 +332,7 @@ export async function controlRoom(code: string, token: string, requestId: string
     } else if (control === "end") {
       await rows(tx, "UPDATE rooms SET status='ended' WHERE id=$1", [room.id]);
       await rows(tx, "UPDATE runs SET ended_at=now() WHERE id=$1 AND ended_at IS NULL", [run.id]);
-      label = "Presenter ended the room.";
+      label = "Presenter ended this run. The demo room remains open.";
     } else if (control === "set_mode") {
       if (mode !== "conventional" && mode !== "ledger") throw new DomainError("BAD_MODE", "Choose a valid comparison mode.", 400);
       await rows(tx, "UPDATE rooms SET mode=$2 WHERE id=$1", [room.id, mode]);

@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, loadRoom, mutation } from "@/lib/client";
+import { api, loadRoom, mutation, type ApiError } from "@/lib/client";
 import type { Snapshot, WireEvent } from "@/lib/store";
 
 export function useRoom(code: string) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [animatedEvent, setAnimatedEvent] = useState<WireEvent | null>(null);
@@ -30,10 +31,12 @@ export function useRoom(code: string) {
       setSnapshot(data);
       setConnected(true);
       setError(null);
+      setErrorCode(null);
     } catch (cause) {
       wasConnected.current = false;
       setConnected(false);
       setError(cause instanceof Error ? cause.message : "Connection unavailable.");
+      setErrorCode((cause as ApiError)?.code ?? null);
     } finally { inFlight.current = false; }
   }, [code]);
 
@@ -56,9 +59,10 @@ export function useRoom(code: string) {
       return result;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The action failed.");
+      setErrorCode((cause as ApiError)?.code ?? null);
       throw cause;
     } finally { setBusy(false); }
   }, [code, connected, refresh, snapshot]);
 
-  return { snapshot, error, connected, busy, animatedEvent, setAnimatedEvent, refresh, post };
+  return { snapshot, error, errorCode, connected, busy, animatedEvent, setAnimatedEvent, refresh, post };
 }

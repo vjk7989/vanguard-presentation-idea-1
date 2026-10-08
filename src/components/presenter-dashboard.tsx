@@ -18,7 +18,6 @@ export function PresenterDashboard({ code }: { code: string }) {
   const room = useRoom(code);
   const { snapshot: s, connected, busy, error, animatedEvent, post } = room;
   const [selected, setSelected] = useState<WireEvent | null>(null);
-  const [showJoin, setShowJoin] = useState(false);
   const [joinUrl, setJoinUrl] = useState("");
   useEffect(() => { queueMicrotask(() => setJoinUrl(`${location.origin}/join/${code}`)); }, [code]);
   async function control(name: string, extra: object = {}) { try { await post("controls", { control: name, ...extra }); } catch {} }
@@ -26,7 +25,7 @@ export function PresenterDashboard({ code }: { code: string }) {
     if (!s?.next) return;
     try { await post("actions", { action: s.next.type, onBehalfOf: s.next.role }); } catch {}
   }
-  async function release(role: Role) { try { await post("roles/release", { role }); } catch {} }
+  async function kick(role: Role) { try { await post("roles/release", { role }); } catch {} }
 
   if (!s) return <Shell><div className="mx-auto max-w-6xl p-8"><div className="h-12 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}</div></Shell>;
   const actionsDisabled = !connected || busy;
@@ -37,7 +36,7 @@ export function PresenterDashboard({ code }: { code: string }) {
   </div>;
   const roles = <div className="space-y-2">{s.roles.map(item => <div key={item.role} className="flex min-h-12 items-center justify-between gap-3 border-b border-border py-2 text-sm">
     <div><span className="font-semibold">{names[item.role]}</span><span className="ml-2 text-muted-foreground">{item.claimed ? item.connected ? "Connected" : "Disconnected" : "Available"}</span></div>
-    {item.claimed && <Button size="sm" variant="ghost" onClick={() => release(item.role)} disabled={actionsDisabled}>Release</Button>}
+    {item.claimed && <Button size="sm" variant="ghost" onClick={() => kick(item.role)} disabled={actionsDisabled} aria-label={`Kick ${names[item.role]}`}>Kick</Button>}
   </div>)}</div>;
   return <Shell>
     <header className="border-b border-border"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8">
@@ -48,11 +47,10 @@ export function PresenterDashboard({ code }: { code: string }) {
       <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
         <div><p className="text-sm text-muted-foreground">Friday customer redemptions · Run {s.runNumber}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Operations control room</h1></div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={() => setShowJoin(v => !v)}>{showJoin ? "Hide join" : "Join devices"}</Button>
           {s.status === "lobby" ? <Button onClick={() => control("start")} disabled={actionsDisabled}>Start scenario <ArrowRight size={16} /></Button> : <>
             {s.status === "active" ? <Button variant="secondary" onClick={() => control("pause")} disabled={actionsDisabled}><Pause size={16} /> Pause</Button> : s.status === "paused" ? <Button onClick={() => control("resume")} disabled={actionsDisabled}><Play size={16} /> Resume</Button> : null}
             <Button variant="secondary" onClick={() => control("reset")} disabled={actionsDisabled}><RotateCcw size={16} /> Restart</Button>
-            <Button variant="danger" onClick={() => control("end")} disabled={actionsDisabled || s.status === "ended"}>End room</Button>
+            <Button variant="danger" onClick={() => control("end")} disabled={actionsDisabled || s.status === "ended"}>End run</Button>
           </>}
         </div>
       </div>
@@ -60,7 +58,7 @@ export function PresenterDashboard({ code }: { code: string }) {
       {s.status === "lobby" ? <div className="grid gap-8 lg:grid-cols-[320px_1fr]">
         {join}<section><h2 className="mb-3 text-lg font-semibold">Role positions</h2>{roles}<p className="mt-5 max-w-xl text-sm leading-6 text-muted-foreground">Each participant chooses one role. You can start with an empty position and perform its action from this laptop.</p><div className="mt-7 border-t border-border pt-5"><h3 className="font-semibold">Presenter guide</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Ask who owns each confirmation. After fund processing, point out that $200m is pending and bank cash remains $300m. Switch views without changing the financial state.</p></div></section>
       </div> : <>
-        {showJoin && <div className="mb-6 grid gap-5 md:grid-cols-[260px_1fr]">{join}<div><h2 className="text-lg font-semibold">Participants</h2>{roles}</div></div>}
+        <div className="mb-6 grid gap-5 md:grid-cols-[260px_1fr]">{join}<div><h2 className="text-lg font-semibold">Participants</h2>{roles}<p className="mt-3 text-sm text-muted-foreground">Kicked participants can scan the QR code or tap Rejoin on their device.</p></div></div>
         <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border-y border-border py-3">
           <div className="flex items-center gap-3 text-sm font-semibold"><span className={s.mode === "conventional" ? "text-foreground" : "text-muted-foreground"}>Without blockchain</span><Switch.Root checked={s.mode === "ledger"} onCheckedChange={checked => control("set_mode", { mode: checked ? "ledger" : "conventional" })} disabled={actionsDisabled} aria-label="Show shared workflow ledger" className="relative h-7 w-12 rounded-full bg-secondary data-[state=checked]:bg-primary"><Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" /></Switch.Root><span className={s.mode === "ledger" ? "text-foreground" : "text-muted-foreground"}>With blockchain</span></div>
           <p className="text-xs text-muted-foreground">Same transaction and controls. Different record-sharing design.</p>

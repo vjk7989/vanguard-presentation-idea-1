@@ -1,5 +1,5 @@
 import "server-only";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { DomainError } from "./domain";
 
@@ -16,18 +16,11 @@ export function entryToken(scope: "create" | "join", requestId: string, code = "
 }
 export function tokenHash(token: string) { return createHmac("sha256", secret()).update(token).digest("hex"); }
 
-export function assertAccessCode(submitted: string) {
-  const configured = process.env.PRESENTER_ACCESS_CODE;
-  if (!configured) throw new Error("PRESENTER_ACCESS_CODE is required.");
-  const a = createHmac("sha256", secret()).update(submitted).digest();
-  const b = createHmac("sha256", secret()).update(configured).digest();
-  if (!timingSafeEqual(a, b)) throw new DomainError("ACCESS_DENIED", "The presenter code is incorrect.", 403);
-}
-
 export function assertOrigin(req: NextRequest) {
-  const expected = process.env.APP_ORIGIN;
-  if (!expected) throw new Error("APP_ORIGIN is required.");
-  if (req.headers.get("origin") !== new URL(expected).origin) throw new DomainError("BAD_ORIGIN", "This request came from an unapproved origin.", 403);
+  const origin = req.headers.get("origin");
+  const allowed = new Set([new URL(req.url).origin]);
+  if (process.env.APP_ORIGIN) allowed.add(new URL(process.env.APP_ORIGIN).origin);
+  if (!origin || !allowed.has(origin)) throw new DomainError("BAD_ORIGIN", "This request came from an unapproved origin.", 403);
 }
 
 export function getToken(req: NextRequest) {

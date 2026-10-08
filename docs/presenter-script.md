@@ -1,6 +1,8 @@
 # Three-minute presenter script
 
 **0:00–0:30 — Set the scene**
+Open the public control room and show the permanent `DEMO01` QR code. Ask participants to scan it and choose issuer, fund, and bank roles. If a device needs to switch people, choose **Kick**; that person can scan again or press **Rejoin**.
+
 "Harbor Dollar is a fictional issuer. It has $2bn in obligations, $300m in bank cash, and $1.7bn in assumed eligible fund holdings. Customers request $450m in bank payouts. We need $50m left after payment, so the issuer requests $200m from the fund."
 
 **0:30–1:15 — Request and process**

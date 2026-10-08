@@ -1,24 +1,27 @@
 "use client";
-import { FormEvent, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, LockKeyhole } from "lucide-react";
+import Link from "next/link";
+import { QRCodeSVG } from "qrcode.react";
+import { ArrowRight, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 import { Disclaimer, ThemeToggle } from "@/components/common";
+import { DEMO_ROOM_CODE } from "@/lib/demo";
 
 export default function Home() {
   const router = useRouter();
-  const [accessCode, setAccessCode] = useState("");
-  const [roomCode, setRoomCode] = useState("");
+  const [joinUrl, setJoinUrl] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => { queueMicrotask(() => setJoinUrl(`${location.origin}/join/${DEMO_ROOM_CODE}`)); }, []);
 
-  async function create(event: FormEvent) {
-    event.preventDefault(); setWorking(true); setError("");
+  async function openControls() {
+    setWorking(true); setError("");
     try {
-      const result = await api<{ code: string }>("/api/rooms", { accessCode, requestId: crypto.randomUUID() });
+      const result = await api<{ code: string }>("/api/rooms", { requestId: crypto.randomUUID() });
       router.push(`/presenter/${result.code}`);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Room creation failed."); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not open the demo room."); }
     finally { setWorking(false); }
   }
 
@@ -31,7 +34,7 @@ export default function Home() {
       <section className="max-w-2xl">
         <p className="mb-5 text-sm font-semibold text-primary">Friday customer redemptions</p>
         <h1 className="max-w-xl text-balance text-4xl font-bold leading-tight tracking-tight sm:text-5xl">Follow the cash. See who confirms each step.</h1>
-        <p className="mt-6 max-w-xl text-lg leading-8 text-muted-foreground">A room-based demonstration of an issuer, a fund operator, and a bank handling a $450m customer payout. Participants use their phones while the presenter controls the shared view.</p>
+        <p className="mt-6 max-w-xl text-lg leading-8 text-muted-foreground">One shared demonstration of an issuer, a fund operator, and a bank handling a $450m customer payout. Scan the QR code to join from a phone, or open the public control room.</p>
         <div className="mt-10 border-t border-border pt-6">
           <h2 className="text-base font-semibold">What the demonstration shows</h2>
           <ol className="mt-4 space-y-3 text-base text-muted-foreground">
@@ -41,21 +44,16 @@ export default function Home() {
           </ol>
         </div>
       </section>
-      <section className="self-start rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8" aria-label="Room access">
-        <div className="mb-7 flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-primary"><LockKeyhole size={22} /></div>
-        <h2 className="text-2xl font-semibold">Start a demo room</h2>
-        <p className="mt-2 text-muted-foreground">Create a room, then invite the three role devices with a QR code.</p>
-        <form onSubmit={create} className="mt-7 space-y-4">
-          <label className="block text-sm font-semibold" htmlFor="access-code">Presenter access code</label>
-          <input id="access-code" type="password" autoComplete="off" required value={accessCode} onChange={e => setAccessCode(e.target.value)} className="h-12 w-full rounded-md border border-border bg-background px-4 text-foreground" />
-          <div className="text-sm text-muted-foreground">Scenario: Friday customer redemptions</div>
-          <Button className="w-full" type="submit" disabled={working}>{working ? "Creating room…" : "Create demo room"}<ArrowRight size={17} /></Button>
-        </form>
-        <div className="my-7 flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />OR JOIN A ROOM<span className="h-px flex-1 bg-border" /></div>
-        <form onSubmit={e => { e.preventDefault(); if (roomCode.trim()) router.push(`/join/${roomCode.trim().toUpperCase()}`); }} className="flex gap-2">
-          <input aria-label="Six-character room code" maxLength={6} placeholder="Room code" value={roomCode} onChange={e => setRoomCode(e.target.value.toUpperCase())} className="h-11 min-w-0 flex-1 rounded-md border border-border bg-background px-4 font-mono uppercase" />
-          <Button type="submit" variant="secondary" disabled={roomCode.trim().length !== 6}>Join</Button>
-        </form>
+      <section className="self-start rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8" aria-label="Demo access">
+        <div className="mb-7 flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-primary"><QrCode size={22} /></div>
+        <h2 className="text-2xl font-semibold">Join the shared demo</h2>
+        <p className="mt-2 text-muted-foreground">This room stays available. Scan the QR code or open the join link on your device.</p>
+        <div className="mt-7 flex justify-center rounded-lg border border-border bg-background p-4">{joinUrl && <QRCodeSVG value={joinUrl} size={180} marginSize={2} bgColor="transparent" fgColor="currentColor" aria-label="QR code to join the shared demo" />}</div>
+        <p className="mt-3 text-center font-mono text-sm text-muted-foreground">ROOM {DEMO_ROOM_CODE}</p>
+        <Button asChild className="mt-6 w-full"><Link href={`/join/${DEMO_ROOM_CODE}`}>Join demo <ArrowRight size={17} /></Link></Button>
+        <div className="my-6 h-px bg-border" />
+        <p className="mb-3 text-sm text-muted-foreground">Anyone can open the presenter view for this public demo.</p>
+        <Button className="w-full" variant="secondary" onClick={openControls} disabled={working}>{working ? "Opening…" : "Open control room"}<ArrowRight size={17} /></Button>
         {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
       </section>
     </main>

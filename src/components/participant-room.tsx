@@ -1,20 +1,33 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, CircleCheck, Clock3, Wifi, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Disclaimer, ThemeToggle } from "@/components/common";
 import { useRoom } from "@/hooks/use-room";
 import { formatMoney, type Role } from "@/lib/domain";
+import { api, mutation } from "@/lib/client";
 
 const names: Record<Role, string> = { issuer: "Issuer treasury", fund: "Fund operations", bank: "Bank operations" };
 
 export function ParticipantRoom({ code }: { code: string }) {
   const router = useRouter();
-  const { snapshot: s, error, connected, busy, post } = useRoom(code);
+  const { snapshot: s, error, errorCode, connected, busy, post } = useRoom(code);
+  const [rejoining, setRejoining] = useState(false);
+  const [rejoinError, setRejoinError] = useState("");
   const role = s?.session.role;
   useEffect(() => { if (s && s.session.kind === "participant" && !s.session.role) router.replace(`/join/${code}`); }, [s, router, code]);
   async function act() { if (!s?.next) return; try { await post("actions", { action: s.next.type }); } catch {} }
+  async function rejoin() {
+    setRejoining(true); setRejoinError("");
+    try {
+      const preview = await api<{ runId: string }>(`/api/rooms/${code}/preview`);
+      await api(`/api/rooms/${code}/join`, mutation(preview.runId));
+      router.replace(`/join/${code}`);
+    } catch (cause) { setRejoinError(cause instanceof Error ? cause.message : "Could not rejoin."); }
+    finally { setRejoining(false); }
+  }
+  if (errorCode === "NO_SESSION") return <div className="flex min-h-screen flex-col bg-background text-foreground"><header className="mx-auto flex w-full max-w-md items-center justify-between px-5 py-5"><div className="text-sm font-bold">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><ThemeToggle /></header><main className="mx-auto w-full max-w-md flex-1 px-5 pt-12"><h1 className="text-3xl font-bold">You left the demo room</h1><p className="mt-4 leading-7 text-muted-foreground">Your role is available again. Scan the room QR code or press Rejoin to choose a role.</p><Button className="mt-8 w-full" onClick={rejoin} disabled={rejoining}>{rejoining ? "Rejoining…" : "Rejoin"}<ArrowRight size={17} /></Button>{rejoinError && <p role="alert" className="mt-4 text-sm text-destructive">{rejoinError}</p>}</main><Disclaimer /></div>;
   if (!s) return <div className="mx-auto max-w-md p-5"><div className="h-12 animate-pulse rounded bg-muted" /><div className="mt-8 h-64 animate-pulse rounded bg-muted" />{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}</div>;
   const mine = Boolean(role && s.next?.role === role);
   const blocked = s.state.bankDelayed && s.next?.type === "confirm_proceeds";

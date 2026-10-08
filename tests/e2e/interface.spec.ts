@@ -2,23 +2,24 @@ import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { CODE, mockRoom, snapshot } from "./fixtures";
 
-test("presenter can create a room from the setup screen", async ({ page }) => {
+test("anyone can open the shared control room without an access code", async ({ page }) => {
   await mockRoom(page, snapshot("presenter", null, "lobby"));
   await page.route("**/api/rooms", route => route.fulfill({ json: { code: CODE, runId: "11111111-1111-4111-8111-111111111111" }, status: 201 }));
   await page.goto("/");
-  await page.getByLabel("Presenter access code").fill("fixture-code");
-  await page.getByRole("button", { name: "Create demo room" }).click();
+  await expect(page.getByLabel("QR code to join the shared demo")).toBeVisible();
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.screenshot({ path: "docs/screenshots/home-1366x768.png", fullPage: true });
+  await page.getByRole("button", { name: "Open control room" }).click();
   await expect(page).toHaveURL(`/presenter/${CODE}`);
   await expect(page.getByRole("heading", { name: "Role positions" })).toBeVisible();
-  await expect(page.getByRole("main").getByText("ABC123", { exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByText("DEMO01", { exact: true })).toBeVisible();
 });
 
-test("setup explains a rejected access code without leaving the page", async ({ page }) => {
-  await page.route("**/api/rooms", route => route.fulfill({ status: 403, json: { error: "ACCESS_DENIED", message: "The presenter code is incorrect." } }));
+test("setup explains a server error without leaving the page", async ({ page }) => {
+  await page.route("**/api/rooms", route => route.fulfill({ status: 500, json: { error: "SERVER_ERROR", message: "The server could not complete this request." } }));
   await page.goto("/");
-  await page.getByLabel("Presenter access code").fill("wrong-code");
-  await page.getByRole("button", { name: "Create demo room" }).click();
-  await expect(page.getByText("The presenter code is incorrect.")).toBeVisible();
+  await page.getByRole("button", { name: "Open control room" }).click();
+  await expect(page.getByText("The server could not complete this request.")).toBeVisible();
   await expect(page).toHaveURL("/");
 });
 
@@ -27,6 +28,9 @@ test("presenter dashboard shows pending cash, comparison and event detail", asyn
   await mockRoom(page, snapshot("presenter", null));
   await page.goto(`/presenter/${CODE}`);
   await expect(page.getByRole("heading", { name: "Operations control room" })).toBeVisible();
+  await expect(page.getByLabel("QR code to join this room")).toBeVisible();
+  await page.getByRole("button", { name: "Kick Issuer treasury" }).click();
+  await expect(page.getByText("Available", { exact: true })).toBeVisible();
   await expect(page.getByText("$200m", { exact: true })).toBeVisible();
   await expect(page.getByText("$300m", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Fund holdings fell to/ }).click();
@@ -43,6 +47,24 @@ test("presenter dashboard shows pending cash, comparison and event detail", asyn
   await page.waitForTimeout(300);
   const darkA11y = await new AxeBuilder({ page }).analyze();
   expect(darkA11y.violations.filter(v => v.impact === "critical" || v.impact === "serious")).toEqual([]);
+});
+
+test("a kicked participant can rejoin and choose a role", async ({ page }) => {
+  const data = snapshot("participant", "issuer");
+  let kicked = false;
+  await mockRoom(page, data);
+  await page.route(`**/api/rooms/${CODE}/state`, route => kicked
+    ? route.fulfill({ status: 401, json: { error: "NO_SESSION", message: "Join this room to continue." } })
+    : route.fulfill({ json: data }));
+  await page.goto(`/room/${CODE}`);
+  await expect(page.getByRole("heading", { name: "Issuer treasury" })).toBeVisible();
+  kicked = true;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "You left the demo room" })).toBeVisible();
+  await page.route(`**/api/rooms/${CODE}/state`, route => route.fulfill({ json: { ...data, session: { kind: "participant", role: null } } }));
+  await page.getByRole("button", { name: "Rejoin" }).click();
+  await expect(page).toHaveURL(`/join/${CODE}`);
+  await expect(page.getByRole("heading", { name: "Choose your role" })).toBeVisible();
 });
 
 test("participant can claim an available role from a join link", async ({ page }) => {

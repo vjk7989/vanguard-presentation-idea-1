@@ -2,7 +2,7 @@
 
 ## Main flow
 
-1. Create a room and connect issuer, fund, and bank phones. Confirm that refresh retains each role.
+1. Open the shared control room and connect issuer, fund, and bank phones with the QR code. Confirm that refresh retains each role. The presenter may kick a participant; they can rejoin with the QR code or Rejoin button.
 2. Start. Issuer requests $200m; fund accepts it. Cash remains $300m.
 3. Fund processes redemption. Holdings become $1.5bn and pending proceeds $200m. Bank cash remains $300m.
 4. Bank confirms receipt. Pending becomes zero and bank cash becomes $500m.

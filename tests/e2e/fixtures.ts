@@ -2,11 +2,11 @@ import type { Page } from "@playwright/test";
 import type { Snapshot, WireEvent } from "../../src/lib/store";
 import type { Role } from "../../src/lib/domain";
 
-export const CODE = "ABC123";
+export const CODE = "DEMO01";
 export const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const balances = { cash: "30000000000", fund: "150000000000", pending: "20000000000", obligations: "200000000000", requiredBuffer: "5000000000", plannedPayout: "45000000000", redemption: "20000000000" };
 const event = (index: number, type: string, label: string, actor: string): WireEvent => ({ id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, index, type, actor, onBehalfOf: null, label,
-  amount: "20000000000", reference: `DEMO-ISS-ABC123-${index}`, previousHash: "0".repeat(64), hash: String(index).repeat(64),
+  amount: "20000000000", reference: `DEMO-ISS-DEMO01-${index}`, previousHash: "0".repeat(64), hash: String(index).repeat(64),
   stateAfter: { step: index, balances }, createdAt: `2026-10-09T00:0${index}:00.000Z` });
 
 export function snapshot(kind: "presenter" | "participant", role: Role | null, status: Snapshot["status"] = "active"): Snapshot {
@@ -30,6 +30,10 @@ export async function mockRoom(page: Page, data: Snapshot) {
       data.session.role = body.role;
       const role = data.roles.find(r => r.role === body.role);
       if (role) { role.claimed = true; role.connected = true; }
+    }
+    if (body?.role && route.request().url().endsWith("/roles/release")) {
+      const role = data.roles.find(r => r.role === body.role);
+      if (role) { role.claimed = false; role.connected = false; }
     }
     if (body?.action === "confirm_proceeds") {
       data.state.step = 4; data.state.balances.cash = "50000000000"; data.state.balances.pending = "0";

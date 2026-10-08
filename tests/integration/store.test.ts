@@ -39,6 +39,32 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     expect(count[0].count).toBe(1);
   });
 
+  it("keeps one public demo room and lets a kicked participant join again", async () => {
+    const presenter = `presenter-${randomUUID()}`;
+    const preview = await store.roomPreview("DEMO01");
+    const openId = randomUUID();
+    const opened = await store.openDemoPresenter(presenter, openId);
+    createdCodes.push(opened.code);
+    expect(opened.runId).toBe(preview.runId);
+    expect((await store.openDemoPresenter(presenter, openId)).code).toBe(opened.code);
+    const otherPresenter = await store.openDemoPresenter(`presenter-${randomUUID()}`, randomUUID());
+    expect(otherPresenter).toEqual(opened);
+    const first = `participant-${randomUUID()}`;
+    await store.joinRoom(opened.code, first, opened.runId);
+    await store.claimRole(opened.code, first, randomUUID(), opened.runId, "issuer");
+    await store.releaseRole(opened.code, presenter, randomUUID(), opened.runId, "issuer");
+    await expect(store.getSnapshot(opened.code, first)).rejects.toThrow("Join this room");
+    const second = `participant-${randomUUID()}`;
+    await store.joinRoom(opened.code, second, opened.runId);
+    await store.claimRole(opened.code, second, randomUUID(), opened.runId, "issuer");
+    expect((await store.getSnapshot(opened.code, second)).session.role).toBe("issuer");
+    await store.controlRoom(opened.code, presenter, randomUUID(), opened.runId, "end");
+    const late = `participant-${randomUUID()}`;
+    await store.joinRoom(opened.code, late, opened.runId);
+    await store.claimRole(opened.code, late, randomUUID(), opened.runId, "bank");
+    expect((await store.getSnapshot(opened.code, late)).status).toBe("ended");
+  });
+
   it("replays duplicate requests, prevents cross-role actions and rejects stale runs", async () => {
     const presenter = `presenter-${randomUUID()}`;
     const created = await store.createRoom(presenter, randomUUID());
