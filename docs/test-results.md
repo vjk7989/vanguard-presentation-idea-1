@@ -11,11 +11,11 @@ This document records verified checks from the implementation run. Database-back
 | Fixture Playwright desktop and phone views | Pass — 6 Chrome tests at 1366px, 360px, and 430px |
 | Chrome accessibility scan | Pass — no serious or critical axe violations on tested presenter light/dark and participant views |
 | Graft drift check | Pass — `pnpm exec graft build` then `pnpm exec graft check` |
-| Neon concurrent role claims, idempotency, rollback, and cleanup | Not run — 4 tests skipped without `NEON_TEST_DATABASE_URL` |
-| Live four-device and QR scan | Awaiting deployed or shared-origin Neon environment |
+| Concurrent role claims, idempotency, rollback, and cleanup | Pass — 4 integration tests on disposable local PostgreSQL 17; Supabase-hosted run pending connection credentials |
+| Live four-device and QR scan | Pending live Vercel database connection |
 
 Screenshots are saved in `docs/screenshots/` after the Playwright fixture suite runs.
 
 ## Supabase preparation (2026-10-09)
 
-The migration was applied twice to a disposable local PostgreSQL 17 database without errors. All eight app tables had RLS enabled. The four transaction integration tests passed, including retry response shape and replay snapshots. Strict type checking, ESLint, and the five unit tests also passed. A live Supabase connection and Vercel room-creation check remain pending until a dedicated project is available.
+The initial migration was applied twice to a disposable local PostgreSQL 17 database without errors. The dedicated `reserve-operations-lab` Supabase project is now active; the initial and foreign-key-index migrations have both been applied there. All eight app tables have RLS enabled. The Supabase security advisor reports only the expected informational notice for tables with RLS and no browser-facing policies; the performance advisor reports no missing foreign-key indexes. The four local transaction integration tests passed, including retry response shape and replay snapshots. A fresh strict type check, ESLint run, five unit tests, six Chrome fixture tests, production build, and Graft drift check passed. Live Vercel room creation and hosted multi-device checks remain pending until its server environment is connected to Supabase.

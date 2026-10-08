@@ -10,7 +10,7 @@ Requirements: Node.js 22, pnpm 9, and a PostgreSQL database for live multi-devic
 
 1. Run `pnpm install` in this project. The project `.npmrc` keeps the pnpm store and npm cache here.
 2. Copy `.env.example` to `.env.local` and set `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET` (at least 32 characters), `APP_ORIGIN`, and `CRON_SECRET`.
-3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The idempotent migration is in `db/001_initial.sql`. On Supabase, use a dedicated project; the migration enables RLS on every app table, with no browser-facing policies. The app uses server-side Postgres connections and does not need a Supabase API key.
+3. Set `DATABASE_URL` in your shell and run `pnpm migrate`. The ordered, idempotent migrations are in `db/`. On Supabase, use a dedicated project; the initial migration enables RLS on every app table, with no browser-facing policies. The app uses server-side Postgres connections and does not need a Supabase API key.
 4. Run `pnpm dev`. Open `http://localhost:3000` from the presenter laptop.
 
 For phones on a local network, use an HTTPS tunnel or host with a reachable origin. Set `APP_ORIGIN` to that exact origin. The secure session cookie is enabled automatically in production.
@@ -32,10 +32,10 @@ See [Presenter script](docs/presenter-script.md) and [Walkthroughs](docs/walkthr
 
 ## Tests
 
-Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, and `pnpm graft:check`. Playwright uses locally installed Chrome. Unit and fixture tests do not need a database. Set `TEST_DATABASE_URL` to a disposable PostgreSQL database and run `pnpm test:integration` to verify transactional concurrency and recovery. The older `NEON_TEST_DATABASE_URL` name is also accepted. Results from the latest implementation run are in [Test results](docs/test-results.md).
+Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, and `pnpm graft:check`. Playwright uses locally installed Chrome. If this project's dev server is already running, set `PLAYWRIGHT_BASE_URL` to its origin (for example, `http://127.0.0.1:3000`) before `pnpm test:e2e` so Playwright reuses it without starting a second server. Unit and fixture tests do not need a database. Set `TEST_DATABASE_URL` to a disposable PostgreSQL database and run `pnpm test:integration` to verify transactional concurrency and recovery. The older `NEON_TEST_DATABASE_URL` name is also accepted. Results from the latest implementation run are in [Test results](docs/test-results.md).
 
 ## Vercel handoff
 
-Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. For Supabase, copy the **Transaction pooler** URI from the project's Connect panel into Vercel's `DATABASE_URL`; the app's Postgres.js client already disables prepared statements as required by transaction pooling. Run `pnpm migrate` against the chosen database before using the site. Keep the database URL server-only—never prefix it with `NEXT_PUBLIC_` or put it in Git. Redeploy after changing Vercel environment variables. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to a database during compilation.
+Import this public repository into Vercel. Supply `DATABASE_URL`, `PRESENTER_ACCESS_CODE`, `SESSION_SECRET`, `APP_ORIGIN` (the production origin), and `CRON_SECRET` as environment variables. For Supabase, copy the **Transaction pooler** URI from the project's Connect panel into Vercel's `DATABASE_URL`; replace its password placeholder with the private database password, percent-encoding special characters if necessary. The app's Postgres.js client already disables prepared statements as required by transaction pooling. Apply the ordered migrations before using the site. Keep the database URL server-only—never prefix it with `NEXT_PUBLIC_` or put it in Git. Redeploy after changing Vercel environment variables. Vercel reads `vercel.json` for the daily cleanup schedule. The production build does not connect to a database during compilation.
 
 This repository does not provision a database or include production credentials. The participant QR entry point is `/join/[code]` on the deployed origin.
