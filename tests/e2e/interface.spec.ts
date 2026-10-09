@@ -42,7 +42,8 @@ test("presenter dashboard shows pending cash, comparison and event detail", asyn
   await page.getByRole("button", { name: "Close details" }).click();
   await expect(page.getByRole("heading", { name: "Event detail" })).toBeHidden();
   await page.getByRole("switch", { name: "Show shared workflow ledger" }).click();
-  await expect(page.getByRole("heading", { name: "One shared workflow history" })).toBeVisible();
+  await expect(page.getByTestId("conventional-records")).toBeVisible();
+  await expect(page.getByTestId("shared-ledger")).toBeVisible();
   await page.screenshot({ path: "docs/screenshots/dashboard-1366x768.png", fullPage: true });
   const a11y = await new AxeBuilder({ page }).analyze();
   expect(a11y.violations.filter(v => v.impact === "critical" || v.impact === "serious")).toEqual([]);

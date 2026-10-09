@@ -14,6 +14,7 @@ import { DEMO_ROOM_CODE } from "./demo";
 import { fixtureByKey, MOCK_FIXTURES, MOCK_INITIAL_STATUS, type MockItem, type MockStatus } from "./mock-queue";
 import { advanceCase, CASE_PRESETS, nextCaseRole, type CaseAction, type CasePreset, type CaseStatus, type DemoCase } from "./demo-cases";
 import { getIdeaSpec, IDEA_TITLES, roleTitle, type IdeaKey } from "./ideas";
+import { practiceTemplate, practiceTemplates } from "./practice-catalog";
 import type { IdeaAction } from "./ideas/types";
 import type { PathKind } from "./ideas/types";
 
@@ -99,23 +100,23 @@ function wireCase(row: CaseRow): DemoCase {
     status: row.status, nextRole: nextCaseRole(row.status), createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
-function rolesFor(sessions: PresenceRow[], code: string, ideaKey: IdeaKey): Snapshot["roles"] {
+function rolesFor(sessions: PresenceRow[], code: string, ideaKey: IdeaKey, asOf: number): Snapshot["roles"] {
   const roleIds: Role[] = ideaKey === 1 ? [...ROLES] : (getIdeaSpec(ideaKey)?.roles.map(item => item.id as Role) ?? []);
   return roleIds.map(role => {
     const claim = sessions.find(item => item.role === role);
-    return { role, claimed: Boolean(claim), connected: Boolean(claim && Date.now() - new Date(claim.last_seen_at).getTime() < 15_000),
+    return { role, claimed: Boolean(claim), connected: Boolean(claim && asOf - new Date(claim.last_seen_at).getTime() < 15_000),
       walletId: `DEMO-${role.toUpperCase().replaceAll("_", "-")}-${code}` };
   });
 }
 
-function presenceFor(sessions: PresenceRow[], sessionKind: SessionRow["kind"]): Snapshot["presence"] {
-  const online = sessions.filter(item => Date.now() - new Date(item.last_seen_at).getTime() < 15_000);
+function presenceFor(sessions: PresenceRow[], sessionKind: SessionRow["kind"], asOf: number): Snapshot["presence"] {
+  const online = sessions.filter(item => asOf - new Date(item.last_seen_at).getTime() < 15_000);
   const participants = online.filter(item => item.kind === "participant");
   return { online: online.length, admins: online.length - participants.length, participants: participants.length,
     waiting: participants.filter(item => !item.role).length, assigned: participants.filter(item => item.role).length,
     devices: sessionKind === "presenter" ? sessions.filter(item => item.kind === "participant")
       .map(item => ({ id: item.id, label: `Device ${item.id.slice(0, 6).toUpperCase()}`, role: item.role,
-        connected: Date.now() - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
+        connected: asOf - new Date(item.last_seen_at).getTime() < 15_000 })) : [] };
 }
 
 function wireQueue(rowsForRun: QueueRow[]): MockItem[] {
@@ -224,13 +225,19 @@ async function saveState(tx: Query, run: RunRow, state: ScenarioState) {
 }
 
 function practiceFixtures(ideaKey: IdeaKey) {
-  if (ideaKey === 1) return [
-    { key: "issuer-payee-check", owner: "issuer", counterpart: "bank", title: "Payee instruction review", detail: "Practice · verify a fictional holder reference." },
-    { key: "fund-liquidity-note", owner: "fund", counterpart: "issuer", title: "Liquidity note", detail: "Practice · review a fictional redemption status." },
-    { key: "bank-trace-request", owner: "bank", counterpart: "issuer", title: "Payment trace", detail: "Practice · answer a fictional bank reference query." },
-  ];
+  if (ideaKey === 1) return (["issuer", "fund", "bank"] as const).flatMap(role => {
+    const template = practiceTemplates(1, role)[0];
+    const counterpart = template.counterpart;
+    return [
+      { key: `${role}-support-1`, owner: role, counterpart, title: template.title, detail: `Practice · ${template.detail}` },
+      ...MOCK_FIXTURES.filter(item => item.role === role).map((item, index) => ({
+        key: `${role}-support-${index + 2}`, owner: role, counterpart,
+        title: `${item.title} follow-up`, detail: `Practice · ${item.note}`,
+      })),
+    ];
+  });
   const roles = getIdeaSpec(ideaKey)?.roles ?? [];
-  return roles.flatMap((role, roleIndex) => role.sampleRecords.slice(1, 3).map((record, index) => ({
+  return roles.flatMap((role, roleIndex) => role.sampleRecords.slice(1, 5).map((record, index) => ({
     key: `${role.id}-support-${index + 1}`, owner: role.id,
     counterpart: roles[(roleIndex + 1) % roles.length]?.id ?? role.id,
     title: record.title, detail: `Practice · ${record.detail}`,
@@ -422,8 +429,9 @@ export async function getRoomPoll(code: string, token: string, afterRevision: nu
     return getSnapshot(code, token, row.active_run_id === knownRunId ? afterEventIndex : 0);
   }
   const sessions = jsonArray<PresenceRow>(row.sessions);
+  const asOf = Date.now();
   return { changed: false, code: row.code.trim(), runId: row.active_run_id, revision,
-    roles: rolesFor(sessions, row.code.trim(), Number(row.active_idea) as IdeaKey), presence: presenceFor(sessions, row.session_kind),
+    roles: rolesFor(sessions, row.code.trim(), Number(row.active_idea) as IdeaKey, asOf), presence: presenceFor(sessions, row.session_kind, asOf),
     serverTime: new Date().toISOString() };
 }
 
@@ -478,6 +486,7 @@ export async function getSnapshot(code: string, token: string, afterEventIndex =
   if (!row.session_kind) throw new DomainError("NO_SESSION", "Join this room to continue.", 401);
   const state = stateFrom(row, row);
   const sessions = jsonArray<PresenceRow>(row.sessions);
+  const asOf = Date.now();
   const queue = jsonArray<QueueRow>(row.queue);
   const cases = jsonArray<CaseRow>(row.cases);
   const practice = jsonArray<PracticeRow>(row.practice);
@@ -492,8 +501,8 @@ export async function getSnapshot(code: string, token: string, afterEventIndex =
     ideaActions: spec?.actions(ideaState) ?? [], scenarioVersion: state.version, revision: Number(row.revision),
     status: row.status, mode: row.mode, scenario: ideaKey === 1 ? "Friday customer redemptions" : IDEA_TITLES[ideaKey], state: toWireState(state),
     next: ideaKey === 1 ? nextAction(state.step, state.version) : null,
-    roles: rolesFor(sessions, row.code.trim(), ideaKey),
-    presence: presenceFor(sessions, session.kind),
+    roles: rolesFor(sessions, row.code.trim(), ideaKey, asOf),
+    presence: presenceFor(sessions, session.kind, asOf),
     mockItems: wireQueue(queue),
     cases: cases.map(wireCase),
     practiceItems: practice.map(item => ({ itemKey: item.item_key, ownerRole: item.owner_role,
@@ -533,6 +542,10 @@ export async function claimRole(code: string, token: string, requestId: string, 
     if (session.kind !== "participant") throw new DomainError("PRESENTER_ROLE", "Use a participant device to claim a role.", 403);
     const choices: string[] = room.active_idea === 1 ? [...ROLES] : getIdeaSpec(room.active_idea)?.roles.map(item => item.id) ?? [];
     if (!choices.includes(role)) throw new DomainError("BAD_ROLE", "Choose an available role for this idea.", 400);
+    if (session.role) throw new DomainError("ROLE_ALREADY_CLAIMED", "This profile already has a role. Change it from your dashboard first.", 409);
+    const prior = (await rows<{ session_id: string }>(tx,
+      "SELECT session_id FROM role_claims WHERE room_id=$1 AND idea_key=$2 AND role=$3", [room.id, room.active_idea, role]))[0];
+    if (prior) throw new DomainError("ROLE_TAKEN", "Another device claimed this role. Refresh the picker.", 409);
     await rows(tx, "INSERT INTO role_claims (room_id, idea_key, role, session_id) VALUES ($1,$2,$3,$4)", [room.id, room.active_idea, role, session.id]);
     const event = await appendEvent(tx, room, run, state, { type: "role_claimed", actor: role,
       label: `${roleTitle(room.active_idea, role)} joined ${IDEA_TITLES[room.active_idea]}.` });
@@ -733,6 +746,34 @@ export async function performPracticeAction(code: string, token: string, request
       label, reference: item.item_key,
       route: { source: actorRole, target: recipient, kind: "instruction" } });
     return { eventId: event.id, message: label };
+  });
+}
+
+export async function createPracticeTask(code: string, token: string, requestId: string, runId: string,
+  templateId: string, onBehalfOf?: Role) {
+  return mutate(code, token, requestId, runId, async ({ tx, room, run, state, session }) => {
+    if (room.status !== "active") throw new DomainError("NOT_ACTIVE", "Start or resume this idea before opening practice work.");
+    const template = practiceTemplate(room.active_idea, templateId);
+    if (!template) throw new DomainError("BAD_TEMPLATE", "Choose a practice task for this desk.", 400);
+    if (session.kind === "participant" && onBehalfOf)
+      throw new DomainError("PRESENTER_ONLY", "Only an admin may act for another desk.", 403);
+    const actorRole = session.kind === "presenter" ? onBehalfOf : session.role;
+    if (actorRole !== template.owner) throw new DomainError("WRONG_ROLE", "This template belongs to another desk.", 403);
+    const created = (await rows<{ count: string }>(tx,
+      "SELECT count(*)::text AS count FROM practice_items WHERE run_id=$1 AND item_key LIKE 'LIVE-%'", [run.id]))[0];
+    const ordinal = Number(created.count) + 1;
+    if (ordinal > 20) throw new DomainError("PRACTICE_LIMIT", "This run already has 20 new practice tasks. Reset for a fresh queue.");
+    const itemKey = `LIVE-${String(ordinal).padStart(2, "0")}-${template.owner.toUpperCase()}`;
+    await rows(tx, `INSERT INTO practice_items (run_id, item_key, owner_role, counterparty_role, title, detail)
+      VALUES ($1,$2,$3,$4,$5,$6)`, [run.id, itemKey, template.counterpart, template.owner,
+      template.title, `Practice only · ${template.detail}`]);
+    const label = `${roleTitle(room.active_idea, template.owner)} opened ${template.title} for ${roleTitle(room.active_idea, template.counterpart)}. Practice only; main scenario unchanged.`;
+    const event = await appendEvent(tx, room, run, state, { type: "practice_created",
+      actor: session.kind === "presenter" ? "presenter" : template.owner,
+      onBehalfOf: session.kind === "presenter" ? template.owner : null,
+      label, reference: itemKey,
+      route: { source: template.owner, target: template.counterpart, kind: "instruction" } });
+    return { eventId: event.id, message: `${itemKey} opened for ${roleTitle(room.active_idea, template.counterpart)}. Practice only.` };
   });
 }
 

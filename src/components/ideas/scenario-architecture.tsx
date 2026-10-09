@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ArrowDown, ArrowRight, Check, Link2, Radio, Users } from "lucide-react";
+import { ArrowDown, ArrowRight, Radio, Users } from "lucide-react";
 import type { IdeaAction, IdeaSpec } from "@/lib/ideas/types";
 
 type Device = { id: string; role: string | null; connected: boolean };
@@ -13,7 +13,6 @@ type Props = {
   roles: RolePresence[];
   devices: Device[];
   animatedEvent: { type: string; label: string; route?: { source: string; target: string; kind: IdeaAction["pathKind"] } | null } | null;
-  mode: "conventional" | "ledger";
   events: Event[];
 };
 
@@ -52,14 +51,15 @@ function displayStage(value: unknown): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
-export function ScenarioArchitecture({ spec, state, roles, devices, animatedEvent, mode, events }: Props) {
+export function ScenarioArchitecture({ spec, state, roles, devices, animatedEvent, events }: Props) {
   const allRoutes = useMemo(() => routesFor(spec), [spec]);
   const activeRoute = animatedEvent?.route
     ? { id: animatedEvent.type, role: animatedEvent.route.source, label: animatedEvent.label, detail: "", source: animatedEvent.route.source, target: animatedEvent.route.target, pathKind: animatedEvent.route.kind }
     : animatedEvent ? allRoutes.find(route => route.id === animatedEvent.type) ?? null : null;
   const roleById = useMemo(() => new Map(spec.roles.map(role => [role.id, role])), [spec.roles]);
   const waiting = devices.filter(device => device.connected && !device.role);
-  const online = roles.filter(role => role.connected).length;
+  const claimed = roles.filter(role => role.claimed).length;
+  const participantsOnline = devices.filter(device => device.connected).length;
   const current = spec.actions(state);
   const extraNodeIds = [...new Set([...allRoutes, ...(activeRoute ? [activeRoute] : [])].flatMap(route => [route.source, route.target]))].filter(id => !roleById.has(id));
   const nodeIds = [...spec.roles.map(role => role.id), ...extraNodeIds];
@@ -82,17 +82,17 @@ export function ScenarioArchitecture({ spec, state, roles, devices, animatedEven
     const role = roleById.get(id);
     if (!role) return <div key={id} className="min-w-0 rounded-xl border border-dashed border-border bg-muted/40 p-3 sm:p-4"><span className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"><Users size={17} aria-hidden="true" /></span><h3 className="mt-3 text-sm font-bold text-foreground">{roleName(id)}</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">Presenter-operated fictional service</p><p className="mt-3 border-t border-border pt-2 text-xs font-semibold text-muted-foreground">No participant device</p></div>;
     const presence = roles.find(item => item.role === id);
-    const device = devices.find(item => item.role === id && item.connected);
+    const device = devices.find(item => item.role === id);
     const highlighted = activeRoute?.source === id || activeRoute?.target === id;
-    const status = presence?.connected ? "Online" : presence?.claimed ? "Offline" : "Role open";
+    const status = device?.connected ? "Device online" : presence?.claimed ? "Device offline" : "Role open";
     return <div key={id} className={`min-w-0 rounded-xl border bg-card p-3 shadow-sm transition-[border-color,box-shadow] duration-200 sm:p-4 ${highlighted ? "border-primary shadow-md" : "border-border"}`}>
       <div className="flex items-start justify-between gap-2">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground"><Radio size={17} aria-hidden="true" /></span>
-        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${presence?.connected ? "bg-emerald-100 text-emerald-950 dark:bg-emerald-900/50 dark:text-emerald-100" : "bg-muted text-foreground"}`}>{status}</span>
+        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${device?.connected ? "bg-emerald-100 text-emerald-950 dark:bg-emerald-900/50 dark:text-emerald-100" : "bg-muted text-foreground"}`}>{status}</span>
       </div>
       <h3 className="mt-3 text-sm font-bold leading-5 text-foreground">{role.title}</h3>
       <p className="mt-1 text-xs leading-5 text-muted-foreground">{role.organization}</p>
-      <p className="mt-3 border-t border-border pt-2 font-mono text-xs text-muted-foreground">{device ? `Device ${device.id.slice(0, 6)}` : presence?.claimed ? "Device not connected" : "Presenter can act"}</p>
+      <p className="mt-3 border-t border-border pt-2 font-mono text-xs text-muted-foreground">{device ? `Device ${device.id.slice(0, 6)} · ${device.connected ? "online" : "offline"}` : presence?.claimed ? "Device offline" : "Presenter can act"}</p>
     </div>;
   };
 
@@ -104,7 +104,7 @@ export function ScenarioArchitecture({ spec, state, roles, devices, animatedEven
       @media (prefers-reduced-motion: reduce) { .scenario-path-active, .scenario-ledger-pulse { animation: none !important; } }`}</style>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0"><h2 className="text-lg font-bold text-foreground">{spec.title} · live coordination</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{spec.summary}</p></div>
-      <div className="flex shrink-0 items-center gap-2 rounded-full bg-secondary px-3 py-2 text-xs font-semibold text-foreground"><Users size={15} aria-hidden="true" />{online} desks online · {waiting.length} choosing</div>
+      <div className="flex shrink-0 items-center gap-2 rounded-full bg-secondary px-3 py-2 text-xs font-semibold text-foreground"><Users size={15} aria-hidden="true" />{claimed} roles claimed · {participantsOnline} participants online · {waiting.length} choosing</div>
     </div>
 
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-muted-foreground" aria-label="Path legend">
@@ -142,17 +142,6 @@ export function ScenarioArchitecture({ spec, state, roles, devices, animatedEven
 
     {waiting.length > 0 && <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground"><span className="font-semibold text-foreground">Joining area</span>{waiting.map(device => <span key={device.id} className="rounded-full bg-secondary px-2.5 py-1 font-mono">Device {device.id.slice(0, 6)}</span>)}</div>}
     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-sm"><span className="font-semibold text-foreground">{current.length ? `${current.length} action${current.length === 1 ? "" : "s"} ready across the desks` : "No further guided action is ready"}</span><span className="text-xs text-muted-foreground">Only accepted clicks enter the live record.</span></div>
-
-    {mode === "conventional" ? <div data-testid="conventional-records" className="space-y-3 rounded-xl border border-border bg-background p-4">
-      <div><h3 className="font-semibold">Separate party records</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">Illustrative local views of the same accepted actions. Compare counterpart records during reconciliation; no artificial delay is added.</p></div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{spec.roles.map(role => {
-        const latest = [...events].reverse().find(event => event.actor === role.id);
-        return <div key={role.id} className="min-w-0 border-t border-border pt-2"><p className="text-xs font-semibold text-foreground">{role.title}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{latest?.label ?? "No accepted action from this desk yet."}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{latest ? `Event #${latest.index}` : "Awaiting record"}</p></div>;
-      })}</div>
-    </div> : <div data-testid="shared-ledger" className="space-y-3 rounded-xl border border-border bg-background p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="inline-flex items-center gap-2 font-semibold"><Link2 size={17} className="text-primary" aria-hidden="true" /> Shared workflow history</h3><span className="text-xs text-muted-foreground">Simulated SHA-256 links · not a deployed blockchain</span></div>
-      <ol className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">{events.slice(-6).reverse().map(event => <li key={event.id} className="min-w-0 border-t border-border pt-2"><p className="truncate text-xs font-semibold text-foreground">{event.label}</p><p className="mt-1 inline-flex items-center gap-1 font-mono text-xs text-muted-foreground"><Check size={13} aria-hidden="true" /> #{event.index} · {event.hash.slice(0, 12)}…</p></li>)}{events.length === 0 && <li className="text-sm text-muted-foreground">The first accepted action will appear here.</li>}</ol>
-    </div>}
 
     <div className="border-t border-border pt-4"><h3 className="text-sm font-semibold text-foreground">Live button log</h3><ol className="mt-2 max-h-48 space-y-1 overflow-y-auto" aria-live="polite">{events.slice(-8).reverse().map(event => <li key={event.id} className="flex flex-wrap justify-between gap-x-3 gap-y-1 border-b border-border/60 py-2 text-xs"><span className="min-w-0 text-foreground">{event.label}</span><span className="shrink-0 font-mono text-muted-foreground">#{event.index} · {roleName(event.actor)}</span></li>)}{events.length === 0 && <li className="py-2 text-xs text-muted-foreground">Waiting for a participant action.</li>}</ol></div>
   </section>;

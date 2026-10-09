@@ -88,7 +88,7 @@ for (const role of Object.keys(roles) as RoleName[]) {
     await mockRoom(page, data);
     await page.setViewportSize({ width: 360, height: 800 });
     await page.goto(`/room/${CODE}/work`);
-    await page.getByRole("button", { name: new RegExp(item!.title) }).click();
+    await page.getByRole("button", { name: `View ${item!.title}, needs review` }).click();
     await expect(page.getByRole("heading", { name: item!.title })).toBeVisible();
     await expect(page.getByRole("dialog").getByText(item!.reference)).toBeVisible();
     await page.getByRole("button", { name: item!.action }).click();
@@ -97,6 +97,26 @@ for (const role of Object.keys(roles) as RoleName[]) {
     expect(data.mockItems.find(candidate => candidate.key === item!.key)?.status).toBe("complete");
   });
 }
+
+test("reserve desks expose eight searchable samples and a live practice starter", async ({ page }) => {
+  const data = snapshot("participant", "issuer");
+  const before = structuredClone(data.state.balances);
+  await mockRoom(page, data);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto(`/room/${CODE}/work`);
+  const samples = page.getByRole("region", { name: "Fictional reference records" });
+  await expect(samples.getByRole("button")).toHaveCount(8);
+  await samples.getByRole("searchbox", { name: "Search reference records" }).fill("SIM-ISS-2401-F1");
+  await expect(samples.getByRole("button")).toHaveCount(1);
+  await samples.getByRole("button").click();
+  await expect(page.getByRole("dialog")).toContainText(/fictional reference only/i);
+  await page.getByRole("button", { name: "Close details" }).click();
+  await page.getByRole("region", { name: "Shared desk practice tasks" }).getByRole("button", { name: "Request payee verification" }).click();
+  await expect(page.getByRole("status")).toContainText(/Practice task opened|opened for the other desk/i);
+  expect(data.practiceItems.some(item => item.itemKey.startsWith("LIVE-"))).toBe(true);
+  expect(data.state.balances).toEqual(before);
+  await assertNoHorizontalOverflow(page);
+});
 
 test("all workspaces fit narrow phones, tablets, and 200% text", async ({ page }) => {
   test.setTimeout(120_000);
@@ -137,7 +157,7 @@ test("separate browser profiles can choose separate roles in the shared room", a
   }
 });
 
-test("a second tab in one profile resumes the already-selected workspace", async ({ context }) => {
+test("a second tab in one profile explains the shared role and links to its workspace", async ({ context }) => {
   const data = snapshot("participant", "fund");
   const first = await context.newPage();
   const second = await context.newPage();
@@ -147,11 +167,88 @@ test("a second tab in one profile resumes the already-selected workspace", async
     await first.goto(`/room/${CODE}`);
     await expect(first.getByRole("heading", { level: 1, name: roles.fund.overview })).toBeVisible();
     await second.goto(`/join/${CODE}`);
+    await expect(second.getByRole("heading", { name: /This profile is already Vanguard Fund Operations Specialist/ })).toBeVisible();
+    await expect(second.getByText(/another Chrome profile, private window, or device/i)).toBeVisible();
+    await second.getByRole("link", { name: "Open your dashboard" }).click();
     await expect(second).toHaveURL(`/room/${CODE}`);
-    await expect(second.getByRole("heading", { level: 1, name: roles.fund.overview })).toBeVisible();
   } finally {
     await Promise.all([first.close(), second.close()]);
   }
+});
+
+test("a fresh profile claims the sole available role through the server", async ({ page }) => {
+  const data = snapshot("participant", null);
+  data.roles = data.roles.map(item => ({ ...item, claimed: item.role !== "bank", connected: item.role !== "bank" }));
+  let joined = false;
+  let claims = 0;
+  await mockRoom(page, data);
+  await page.route(`**/api/rooms/${CODE}/state`, route => joined
+    ? route.fulfill({ json: data })
+    : route.fulfill({ status: 401, json: { error: "NO_SESSION", message: "Join this room to continue." } }));
+  await page.route(`**/api/rooms/${CODE}/join`, route => { joined = true; return route.fulfill({ json: { code: CODE, runId: data.runId } }); });
+  await page.route(`**/api/rooms/${CODE}/roles/claim`, route => { claims++; data.session.role = "bank";
+    data.roles[2].claimed = true; data.roles[2].connected = true;
+    return route.fulfill({ json: { ok: true, runId: data.runId, revision: ++data.revision } }); });
+  await page.goto(`/join/${CODE}`);
+  await expect(page).toHaveURL(`/room/${CODE}`);
+  await expect(page.getByRole("heading", { level: 1, name: roles.bank.overview })).toBeVisible();
+  expect(claims).toBe(1);
+});
+
+test("a competing last-role claim refreshes the picker without phantom assignment", async ({ page }) => {
+  const data = snapshot("participant", null);
+  data.roles = data.roles.map(item => ({ ...item, claimed: item.role !== "bank", connected: item.role !== "bank" }));
+  let joined = false;
+  await mockRoom(page, data);
+  await page.route(`**/api/rooms/${CODE}/state`, route => joined
+    ? route.fulfill({ json: data })
+    : route.fulfill({ status: 401, json: { error: "NO_SESSION", message: "Join this room to continue." } }));
+  await page.route(`**/api/rooms/${CODE}/join`, route => { joined = true; return route.fulfill({ json: { code: CODE, runId: data.runId } }); });
+  await page.route(`**/api/rooms/${CODE}/roles/claim`, route => {
+    data.roles[2].claimed = true;
+    return route.fulfill({ status: 409, json: { error: "ROLE_TAKEN", message: "Another device claimed this role." } });
+  });
+  await page.goto(`/join/${CODE}`);
+  await expect(page.getByRole("heading", { name: "Choose your workspace" })).toBeVisible();
+  await expect(page.getByText("All roles are occupied.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open your dashboard" })).toHaveCount(0);
+});
+
+test("a participant cannot render presenter controls from a direct URL", async ({ page }) => {
+  await mockRoom(page, snapshot("participant", "fund"));
+  await page.goto(`/presenter/${CODE}`);
+  await expect(page.getByRole("heading", { name: "This profile is a participant" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset this idea" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open your dashboard" })).toHaveAttribute("href", `/room/${CODE}`);
+});
+
+test("presenter distinguishes claimed offline roles and shows both comparison panels", async ({ page }) => {
+  const data = snapshot("presenter", null);
+  data.roles[2].claimed = true; data.roles[2].connected = false;
+  data.presence.devices.push({ id: "33333333-3333-4333-8333-333333333333", label: "Device 333333", role: "bank", connected: false });
+  await mockRoom(page, data);
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.goto(`/presenter/${CODE}`);
+  await expect(page.getByText("3/3 roles claimed", { exact: false })).toBeVisible();
+  await expect(page.getByText("Device offline", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("No device assigned", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("conventional-records")).toBeVisible();
+  await expect(page.getByTestId("shared-ledger")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Live role and device workflow" })).toBeVisible();
+  await page.getByRole("button", { name: /#2/ }).first().click();
+  await expect(page.getByTestId("conventional-records")).toContainText("Event #2");
+  await expect(page.getByTestId("shared-ledger")).toContainText("Shared event #2");
+  const bounds = await page.getByTestId("shared-ledger").boundingBox();
+  expect(bounds && bounds.y + bounds.height).toBeLessThanOrEqual(768);
+  await page.screenshot({ path: "docs/screenshots/comparison-1366x768.png", animations: "disabled" });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(page.getByTestId("conventional-records")).toBeVisible();
+  await expect(page.getByTestId("shared-ledger")).toBeVisible();
+  const without = await page.getByTestId("conventional-records").boundingBox();
+  const withLedger = await page.getByTestId("shared-ledger").boundingBox();
+  expect(withLedger!.y).toBeGreaterThan(without!.y);
+  await assertNoHorizontalOverflow(page);
+  await page.screenshot({ path: "docs/screenshots/comparison-360.png", fullPage: true, animations: "disabled" });
 });
 
 test("the admin profile explains why its own QR link cannot claim a participant role", async ({ page }) => {

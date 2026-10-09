@@ -1,4 +1,20 @@
-# Test results — four-idea release
+# Test results — reliable joining and side-by-side comparison
+
+Verified on 2026-10-09 against an isolated local PostgreSQL 17 database and the installed Chrome channel on a local production server. No public `DEMO01` reset or database migration was performed.
+
+| Check | Result |
+|---|---|
+| Strict TypeScript, ESLint, production build | Pass — `pnpm typecheck`, `pnpm lint`, `pnpm build` |
+| Unit tests | Pass — 31, including two templates and eight deterministic sample records for every desk |
+| PostgreSQL integration | Pass — 12, including concurrent claim conflict codes, same-profile claim rejection, retry-safe practice creation, recipient action, 20-task cap, financial isolation, reset/stale-run rejection, and old replay hash preservation |
+| Chrome fixture browser tests | Pass — 65, including fresh-profile sole-role claim, competing claim refresh, same-profile tab, participant presenter-URL guard, offline claim labels, selected evidence in both panels, all role Work views, keyboard, reduced motion, serious/critical axe checks, and 320–430px/200% text overflow checks |
+| Projector comparison | Pass — compact live device workflow plus both evidence panels fit the first 1366×768 screen with QR hidden; panels stack at 360px |
+| Graft drift | Pass — rebuilt local graph and `pnpm graft:check` |
+| Physical device and live action-to-projector p95 | Unverified — no external phone or statistically meaningful live latency sample was available |
+
+Representative captures: [1366×768 comparison](screenshots/comparison-1366x768.png) and [360px comparison](screenshots/comparison-360.png). Practice-created events are explicit participant clicks; static samples do not enter the live event history. Only the server accepts role claims and practice mutations, and no new schema was required.
+
+## Earlier four-idea release
 
 Verified on 2026-10-09 against a local production server and intercepted API fixtures. The prior results below remain as historical release notes.
 

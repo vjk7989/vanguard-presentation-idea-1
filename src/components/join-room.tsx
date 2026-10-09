@@ -27,6 +27,7 @@ export function JoinRoom({ code }: { code: string }) {
   const [joined, setJoined] = useState(false);
   const [kicked, setKicked] = useState(false);
   const [adminSession, setAdminSession] = useState(false);
+  const [existingRole, setExistingRole] = useState<Role | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const joinedRef = useRef(false);
@@ -43,19 +44,42 @@ export function JoinRoom({ code }: { code: string }) {
     setAdminSession(false);
     joinedRef.current = true;
     try { window.localStorage.setItem(joinedMarker, "1"); } catch { /* Private storage may be unavailable. */ }
-    if (room.session.role) { router.replace(`/room/${code}`); return; }
+    if (room.session.role) { setExistingRole(room.session.role); setJoined(true); setKicked(false); setError(""); return; }
+    setExistingRole(null);
     setJoined(true); setKicked(false); setError("");
-  }, [code, joinedMarker, router]);
+  }, [joinedMarker]);
 
   const register = useCallback(async (current: Preview) => {
     setBusy(true); setError("");
     try {
       const joinOnce = async () => {
         // A second tab can reuse the first tab's HTTP-only cookie after its join completes.
-        try { acceptRoom(await loadRoom(code)); return; }
+        let room: Snapshot | null = null;
+        try { room = await loadRoom(code); }
         catch (cause) { if ((cause as ApiError).code !== "NO_SESSION") throw cause; }
-        await api(`/api/rooms/${code}/join`, mutation(current.runId));
-        acceptRoom(await loadRoom(code));
+        if (!room) {
+          await api(`/api/rooms/${code}/join`, mutation(current.runId));
+          room = await loadRoom(code);
+        }
+        let claimWarning = "";
+        if (room.session.kind === "participant" && !room.session.role) {
+          const open = room.roles.filter(item => !item.claimed);
+          if (open.length === 1) {
+            let claimError: unknown = null;
+            try {
+              await api(`/api/rooms/${code}/roles/claim`, mutation(room.runId, { role: open[0].role }));
+            } catch (cause) {
+              // Another device may have won the sole role. Re-read before showing choices.
+              claimError = cause;
+            }
+            room = await loadRoom(code);
+            if (room.session.role === open[0].role) { router.replace(`/room/${code}`); return; }
+            if (claimError && !room.roles.find(item => item.role === open[0].role)?.claimed)
+              claimWarning = claimError instanceof Error ? claimError.message : "Could not claim the remaining role. Choose it below.";
+          }
+        }
+        acceptRoom(room);
+        if (claimWarning) setError(claimWarning);
       };
       if (navigator.locks?.request) await navigator.locks.request(`reserve-lab-join:${code}`, joinOnce);
       else await joinOnce();
@@ -64,7 +88,7 @@ export function JoinRoom({ code }: { code: string }) {
       else setError(cause instanceof Error ? cause.message : "Could not join the room.");
     }
     finally { setBusy(false); }
-  }, [acceptRoom, code]);
+  }, [acceptRoom, code, router]);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
@@ -120,14 +144,15 @@ export function JoinRoom({ code }: { code: string }) {
     <header className="mx-auto flex w-full max-w-4xl items-center justify-between px-5 py-5"><div className="text-sm font-bold">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><ThemeToggle /></header>
     <main className="mx-auto w-full max-w-4xl flex-1 px-5 pb-10 pt-8">
       <p className="mb-5 font-mono text-sm text-muted-foreground">ROOM {code} · IDEA {preview?.ideaKey ?? 1} · {IDEA_TITLES[preview?.ideaKey ?? 1]}</p>
-      <h1 className="text-balance text-3xl font-bold tracking-tight">{adminSession ? "This profile is the admin" : kicked ? "You left the demo room" : "Choose your workspace"}</h1>
-      <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">{adminSession ? "Chrome tabs in this profile share the admin session. Open the QR link in another Chrome profile or device to choose a participant role." : kicked ? "An admin removed this device. You can rejoin and choose an available role again." : "Your device is connected. Select an available desk for this idea. You can change roles later without scanning again."}</p>
+      <h1 className="text-balance text-3xl font-bold tracking-tight">{adminSession ? "This profile is the admin" : kicked ? "You left the demo room" : existingRole ? `This profile is already ${roleTitle(preview?.ideaKey ?? 1, existingRole)}` : "Choose your workspace"}</h1>
+      <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">{adminSession ? "Chrome tabs in this profile share the admin session. Open the QR link in another Chrome profile or device to choose a participant role." : kicked ? "An admin removed this device. You can rejoin and choose an available role again." : existingRole ? "Tabs in this Chrome profile share one device and one role. Use another Chrome profile, private window, or device for a second role. You can change roles from your dashboard." : "Your device is connected. Select an available desk for this idea. If only one role remains, a new profile joins it automatically."}</p>
       {error && <p role="alert" className="mt-5 rounded-md border border-destructive p-4 text-sm text-destructive">{error}</p>}
       {!preview && !error && !adminSession && <div className="mt-8 h-48 animate-pulse rounded-lg bg-muted" />}
       {adminSession && <Link href={`/presenter/${code}`} className="mt-7 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:w-auto">Return to admin dashboard <ArrowRight size={17} /></Link>}
+      {existingRole && !adminSession && !kicked && <Link href={`/room/${code}`} className="mt-7 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:w-auto">Open your dashboard <ArrowRight size={17} /></Link>}
       {kicked && !adminSession && <Button className="mt-7 w-full sm:w-auto" onClick={rejoin} disabled={busy || !preview}><RotateCcw size={17} />{busy ? "Rejoining…" : "Rejoin"}</Button>}
       {preview && !joined && !kicked && !adminSession && <p role="status" className="mt-8 text-sm text-muted-foreground">{busy ? "Connecting your device…" : "Preparing role selection…"}</p>}
-      {preview && joined && !adminSession && <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {preview && joined && !adminSession && !existingRole && <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {preview.status === "ended" && <p className="rounded-md bg-secondary p-3 text-sm sm:col-span-2 lg:col-span-3">The last run has ended. You can choose a role while an admin prepares the next run.</p>}
         {preview.roles.map(item => <button key={item.role} type="button" disabled={busy || item.claimed} onClick={() => claim(item.role)} aria-label={`${getIdeaSpec(preview.ideaKey)?.roles.find(desk => desk.id === item.role)?.organization ?? "Demo"} · ${item.title}${item.claimed ? " · taken" : " · available"}`} className="flex min-h-44 flex-col items-start rounded-lg border border-border bg-card p-5 text-left transition-colors hover:border-primary hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"><span className="flex h-10 w-10 items-center justify-center rounded-md bg-secondary text-primary">{item.claimed ? <CircleCheck size={20} aria-hidden="true" /> : <CircleDashed size={20} aria-hidden="true" />}</span><span className="mt-5 font-semibold">{item.title}</span><span className="mt-2 flex-1 text-sm leading-6 text-muted-foreground">{item.claimed ? "Taken by another device" : roleDescription(preview.ideaKey, item.role)}</span>{!item.claimed && <span className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-primary">Select role <ArrowRight size={16} aria-hidden="true" /></span>}</button>)}
         {preview.roles.every(item => item.claimed) && <p className="text-sm text-muted-foreground sm:col-span-2 lg:col-span-3">All roles are occupied. Ask an admin to free one, then select it here.</p>}

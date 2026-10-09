@@ -31,6 +31,20 @@ export const MOCK_INITIAL_STATUS: Record<string, MockStatus> = Object.fromEntrie
   MOCK_FIXTURES.map(item => [item.key, item.key.endsWith("03") ? "complete" : "pending"]),
 );
 
+/** Static presentation context. These eight records per desk are never inserted as live events. */
+export const SAMPLE_DESK_RECORDS: Record<"issuer" | "fund" | "bank", { reference: string; title: string; detail: string; status: string }[]> =
+  Object.fromEntries((["issuer", "fund", "bank"] as const).map(role => {
+    const base = MOCK_FIXTURES.filter(item => item.role === role);
+    const records = [...base.map(item => ({ reference: item.reference, title: item.title, detail: item.note, status: "Sample · reference only" })),
+      ...Array.from({ length: 5 }, (_, index) => {
+        const source = base[index % base.length];
+        return { reference: `${source.reference}-F${index + 1}`, title: `${source.title} follow-up`,
+          detail: `${source.note} Fictional follow-up in the ${role} desk queue.`,
+          status: index % 2 ? "Sample · filed" : "Sample · needs review" };
+      })];
+    return [role, records];
+  })) as Record<"issuer" | "fund" | "bank", { reference: string; title: string; detail: string; status: string }[]>;
+
 export function fixtureByKey(key: string) { return MOCK_FIXTURES.find(item => item.key === key); }
 
 export function formatMockAmount(minor: string): string {

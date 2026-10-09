@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 import type { Snapshot, WireEvent } from "../../src/lib/store";
 import type { Role } from "../../src/lib/domain";
 import { MOCK_FIXTURES, MOCK_INITIAL_STATUS } from "../../src/lib/mock-queue";
+import { practiceTemplate } from "../../src/lib/practice-catalog";
 
 export const CODE = "DEMO01";
 export const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -25,7 +26,7 @@ export function snapshot(kind: "presenter" | "participant", role: Role | null, s
 
 export async function mockRoom(page: Page, data: Snapshot) {
   await page.route(`**/api/rooms/${CODE}/**`, route => {
-    const body = route.request().postDataJSON() as { control?: string; mode?: Snapshot["mode"]; role?: Role; action?: string; sessionId?: string; preset?: string } | null;
+    const body = route.request().postDataJSON() as { control?: string; mode?: Snapshot["mode"]; role?: Role; action?: string; sessionId?: string; preset?: string; templateId?: string; itemKey?: string } | null;
     if (body?.control === "set_mode" && body.mode) data.mode = body.mode;
     if (body?.control === "delay_bank") data.state.bankDelayed = true;
     if (body?.control === "release_bank") data.state.bankDelayed = false;
@@ -52,6 +53,18 @@ export async function mockRoom(page: Page, data: Snapshot) {
       if (device?.role) data.presence.assigned--; else data.presence.waiting--;
       const role = data.roles.find(item => item.role === device?.role);
       if (role) { role.claimed = false; role.connected = false; }
+    }
+    if (route.request().url().endsWith("/practice") && body?.action === "create" && body.templateId) {
+      const template = practiceTemplate(data.ideaKey, body.templateId);
+      if (template) {
+        const ordinal = data.practiceItems.filter(item => item.itemKey.startsWith("LIVE-")).length + 1;
+        const itemKey = `LIVE-${String(ordinal).padStart(2, "0")}-${template.owner.toUpperCase()}`;
+        data.practiceItems.push({ itemKey, ownerRole: template.counterpart as Role, counterpartyRole: template.owner as Role,
+          title: template.title, detail: template.detail, status: "pending" });
+        const index = ++data.latestEventIndex;
+        data.events.push({ ...event(index, "practice_created", `${template.owner} opened ${template.title} for ${template.counterpart}.`, template.owner),
+          reference: itemKey, route: { source: template.owner, target: template.counterpart, kind: "instruction" } });
+      }
     }
     if (route.request().url().includes("/demo-items/") && route.request().url().endsWith("/complete")) {
       const key = route.request().url().split("/demo-items/")[1]?.split("/")[0];

@@ -63,7 +63,10 @@ for (const ideaKey of ideas) {
           if (view.name === "Work") {
             await expect(page.getByRole("heading", { name: desk.workTitle })).toBeVisible();
             await expect(page.getByRole("heading", { name: "Sample records" })).toBeVisible();
-            await expect(page.getByRole("button", { name: new RegExp(desk.sampleRecords[0].title, "i") })).toBeVisible();
+            await expect(page.getByRole("heading", { name: "Start practice task" })).toBeVisible();
+            await expect(page.getByRole("region", { name: "Start practice task" }).getByRole("button")).toHaveCount(2);
+            expect(desk.sampleRecords).toHaveLength(8);
+            await expect(page.getByRole("button", { name: new RegExp(`${desk.sampleRecords[0].reference}$`, "i") })).toBeVisible();
           }
           if (view.name === "Activity") {
             await expect(page.getByRole("heading", { name: "Live accepted activity" })).toBeVisible();
@@ -85,13 +88,14 @@ for (const ideaKey of ideas) {
     await page.goto(`/room/${CODE}/work`);
     const search = page.getByRole("searchbox", { name: "Search work records" });
     await search.fill(desk.sampleRecords[1].reference);
-    const record = page.getByRole("button", { name: new RegExp(desk.sampleRecords[1].title, "i") });
+    const record = page.getByRole("button", { name: new RegExp(`${desk.sampleRecords[1].reference}$`, "i") });
     await expect(record).toBeVisible();
     await record.focus();
     await expect(record).toBeFocused();
     await record.press("Enter");
     await expect(page.getByRole("dialog").getByRole("heading", { name: desk.sampleRecords[1].title })).toBeVisible();
     await expect(page.getByRole("dialog")).toContainText(/Sample record only/i);
+    await expect(page.getByRole("dialog").getByRole("button", { name: "Start related practice task" })).toBeVisible();
     await page.getByRole("button", { name: "Close details" }).click();
     const nav = page.getByRole("navigation", { name: "Workspace navigation" });
     const activity = nav.getByRole("link", { name: "Activity", exact: true });
@@ -101,6 +105,34 @@ for (const ideaKey of ideas) {
     await noHorizontalOverflow(page);
     const axe = await new AxeBuilder({ page }).analyze();
     expect(axe.violations.filter(item => item.impact === "critical" || item.impact === "serious"), JSON.stringify(axe.violations)).toEqual([]);
+  });
+
+  test(`Idea ${ideaKey} practice starters create visible live work without changing scenario state`, async ({ page }) => {
+    const desk = spec.roles[0];
+    const data = scenarioSnapshot(spec, desk.id as Role);
+    const before = structuredClone(data.ideaState);
+    await mockRoom(page, data);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/room/${CODE}/work`);
+    await page.getByRole("region", { name: "Start practice task" }).getByRole("button").first().click();
+    await expect(page.getByRole("status")).toContainText(/Practice task opened|opened for the other desk/i);
+    expect(data.practiceItems.filter(item => item.itemKey.startsWith("LIVE-"))).toHaveLength(1);
+    expect(data.events.some(event => event.type === "practice_created")).toBe(true);
+    expect(data.ideaState).toEqual(before);
+    await noHorizontalOverflow(page);
+  });
+
+  test(`Idea ${ideaKey} work stays readable at 320–430px and 200% text`, async ({ page }) => {
+    const desk = spec.roles[0];
+    await mockRoom(page, scenarioSnapshot(spec, desk.id as Role));
+    for (const width of [320, 430]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto(`/room/${CODE}/work`);
+      await expect(page.getByRole("heading", { level: 1, name: desk.title })).toBeVisible();
+      await noHorizontalOverflow(page);
+      await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+      await noHorizontalOverflow(page);
+    }
   });
 }
 
@@ -143,6 +175,10 @@ test("Idea 3 presenter has canonical QR, diagram, comparison and an idea switche
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto(`/presenter/${CODE}`);
   await expect(page.getByRole("heading", { level: 1, name: spec.title })).toBeVisible();
+  await expect(page.getByTestId("conventional-records")).toBeVisible();
+  await expect(page.getByTestId("shared-ledger")).toBeVisible();
+  const comparison = await page.getByTestId("shared-ledger").boundingBox();
+  expect(comparison && comparison.y + comparison.height).toBeLessThanOrEqual(768);
   const diagram = page.getByRole("region", { name: "Live workflow diagram" });
   await expect(diagram).toBeVisible();
   await expect(diagram).toContainText(/Vanguard Hedge Operations Analyst/);

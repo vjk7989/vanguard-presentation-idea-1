@@ -36,6 +36,10 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
       store.claimRole(created.code, b, randomUUID(), created.runId, "issuer"),
     ]);
     expect(claims.filter(x => x.status === "fulfilled")).toHaveLength(1);
+    expect(claims.find(x => x.status === "rejected")).toMatchObject({ reason: { code: "ROLE_TAKEN" } });
+    const winner = claims[0].status === "fulfilled" ? a : b;
+    await expect(store.claimRole(created.code, winner, randomUUID(), created.runId, "bank"))
+      .rejects.toMatchObject({ code: "ROLE_ALREADY_CLAIMED" });
     const count = await dbModule.db().unsafe("SELECT count(*)::int AS count FROM role_claims WHERE role='issuer' AND room_id=(SELECT id FROM rooms WHERE code=$1)", [created.code]);
     expect(count[0].count).toBe(1);
   });
@@ -323,6 +327,44 @@ describe.skipIf(!testUrl)("PostgreSQL transaction integration", () => {
     expect(room.session.role).toBe("issuer");
     expect(room.roles.find(role => role.role === "issuer")?.claimed).toBe(true);
     await expect(store.performIdeaAction(created.code, portfolioToken, randomUUID(), switched.runId, guided!.id)).rejects.toThrow("earlier run");
+  });
+
+  it("creates retry-safe routed practice tasks without changing money or rewriting old runs", async () => {
+    const admin = `presenter-${randomUUID()}`;
+    const created = await store.createRoom(admin, randomUUID());
+    createdCodes.push(created.code);
+    const issuer = `participant-${randomUUID()}`;
+    const bank = `participant-${randomUUID()}`;
+    await store.joinRoom(created.code, issuer, created.runId);
+    await store.joinRoom(created.code, bank, created.runId);
+    await store.claimRole(created.code, issuer, randomUUID(), created.runId, "issuer");
+    await store.claimRole(created.code, bank, randomUUID(), created.runId, "bank");
+    await store.controlRoom(created.code, admin, randomUUID(), created.runId, "start");
+    const initial = await store.getSnapshot(created.code, admin);
+    expect(initial.practiceItems.filter(item => item.ownerRole === "issuer")).toHaveLength(4);
+    const beforeMoney = await dbModule.db().unsafe("SELECT * FROM financial_states WHERE run_id=$1", [created.runId]);
+    const requestId = randomUUID();
+    const response = await store.createPracticeTask(created.code, issuer, requestId, created.runId, "issuer-payee-review");
+    expect(await store.createPracticeTask(created.code, issuer, requestId, created.runId, "issuer-payee-review")).toEqual(response);
+    const after = await store.getSnapshot(created.code, admin);
+    const item = after.practiceItems.find(entry => entry.itemKey.startsWith("LIVE-"));
+    expect(item).toMatchObject({ ownerRole: "bank", counterpartyRole: "issuer", status: "pending" });
+    expect(after.events.filter(event => event.type === "practice_created")).toHaveLength(1);
+    expect(after.events.at(-1)?.route).toMatchObject({ source: "issuer", target: "bank", kind: "instruction" });
+    expect(await dbModule.db().unsafe("SELECT * FROM financial_states WHERE run_id=$1", [created.runId])).toEqual(beforeMoney);
+    await expect(store.createPracticeTask(created.code, bank, randomUUID(), created.runId, "issuer-payee-review")).rejects.toThrow("another desk");
+    await store.performPracticeAction(created.code, bank, randomUUID(), created.runId, item!.itemKey, "acknowledge");
+    for (let index = 0; index < 19; index++)
+      await store.createPracticeTask(created.code, issuer, randomUUID(), created.runId, "issuer-liquidity-note");
+    await expect(store.createPracticeTask(created.code, issuer, randomUUID(), created.runId, "issuer-liquidity-note"))
+      .rejects.toThrow("20 new practice tasks");
+    const replay = await store.getRunReplay(created.code, admin, created.runId);
+    expect(replay.events.some(event => event.type === "practice_created")).toBe(true);
+    const reset = await store.controlRoom(created.code, admin, randomUUID(), created.runId, "reset");
+    expect((await store.getSnapshot(created.code, admin)).practiceItems.filter(entry => entry.itemKey.startsWith("LIVE-"))).toHaveLength(0);
+    await expect(store.createPracticeTask(created.code, issuer, randomUUID(), created.runId, "issuer-payee-review")).rejects.toThrow("earlier run");
+    expect((await store.getRunReplay(created.code, admin, created.runId)).events.slice(0, replay.events.length)).toEqual(replay.events);
+    expect(reset.runId).not.toBe(created.runId);
   });
 
   it("rolls back failed actions and cascades expired rooms", async () => {

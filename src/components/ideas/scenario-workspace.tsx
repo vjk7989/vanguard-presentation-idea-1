@@ -5,6 +5,7 @@ import { Activity, ArrowRight, CheckCircle2, Clock3, FileText, Inbox, Search, Sh
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import type { DeskView, IdeaRole, IdeaSpec } from "@/lib/ideas/types";
+import { practiceTemplates } from "@/lib/practice-catalog";
 
 type EventItem = { id: string; label: string; actor: string; createdAt: string; reference: string | null };
 type PracticeItem = { itemKey: string; ownerRole: string; counterpartyRole: string; title: string; detail: string; status: string };
@@ -20,6 +21,7 @@ export type ScenarioWorkspaceProps = {
   disabled: boolean;
   onAction: (actionId: string) => void;
   onPractice: (itemKey: string, action: string) => void;
+  onCreatePractice: (templateId: string) => Promise<void>;
 };
 
 const PRACTICE_LABEL: Record<string, string> = {
@@ -52,11 +54,11 @@ function practiceActions(item: PracticeItem, role: string): string[] {
 function RoleHeader({ spec, desk }: { spec: IdeaSpec; desk: IdeaRole }) {
   const Icon = spec.id === 2 ? Inbox : spec.id === 3 ? Activity : ShieldCheck;
   return <header className="min-w-0 border-b border-border pb-6">
-    <div className="flex flex-wrap items-start gap-4">
+    <div className="flex flex-col items-start gap-4 sm:flex-row">
       <span className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-border bg-secondary text-foreground"><Icon size={23} aria-hidden="true" /></span>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-semibold text-primary">Idea {spec.id} · {spec.title}</p>
-        <h1 className="mt-1 text-2xl font-semibold leading-tight text-balance sm:text-3xl">{desk.title}</h1>
+        <h1 className="mt-1 break-words text-2xl font-semibold leading-tight text-balance sm:text-3xl">{desk.title}</h1>
         <p className="mt-2 text-sm font-medium text-foreground">{desk.organization}</p>
         <p className="mt-2 max-w-2xl text-base leading-6 text-muted-foreground">{desk.responsibility}</p>
       </div>
@@ -104,13 +106,16 @@ function Overview({ spec, desk, role, state, events, practiceItems, disabled, on
   </div>;
 }
 
-function Work({ spec, desk, role, state, practiceItems, disabled, onAction, select }: ScenarioWorkspaceProps & { desk: IdeaRole; select: (selection: Selection) => void }) {
+function Work({ spec, desk, role, state, practiceItems, disabled, onAction, onCreatePractice, select }: ScenarioWorkspaceProps & { desk: IdeaRole; select: (selection: Selection) => void }) {
   const [query, setQuery] = useState("");
   const term = query.trim().toLowerCase();
   const mine = practiceItems.filter(item => (item.ownerRole === role || item.counterpartyRole === role) && `${item.itemKey} ${item.title} ${item.detail} ${item.status}`.toLowerCase().includes(term));
   const samples = desk.sampleRecords.filter(item => `${item.reference} ${item.title} ${item.detail} ${item.status}`.toLowerCase().includes(term));
+  const templates = practiceTemplates(spec.id, role);
+  const createdCount = practiceItems.filter(item => item.itemKey.startsWith("LIVE-")).length;
   return <div className="space-y-7">
     <MainAction spec={spec} role={role} state={state} disabled={disabled} onAction={onAction} compact />
+    <section aria-label="Start practice task" className="rounded-xl border border-border bg-card p-4 sm:p-5"><div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="font-semibold">Start practice task</h2><span className="font-mono text-xs text-muted-foreground">{createdCount}/20 new tasks this run</span></div><p className="mt-1 text-sm text-muted-foreground">Send a job-specific request to another desk. It is live and replayable, but cannot change the guided outcome.</p><div className="mt-4 flex flex-wrap gap-2">{templates.map(template => <Button key={template.id} variant="secondary" className="max-w-full min-w-0 flex-wrap break-words text-left" disabled={disabled || createdCount >= 20} onClick={() => void onCreatePractice(template.id)}>{disabled ? "Waiting for connection…" : template.title} <ArrowRight size={15} className="shrink-0" aria-hidden="true" /></Button>)}</div></section>
     <section aria-label={desk.workTitle} className="min-w-0"><div className="flex flex-wrap items-end justify-between gap-4"><div><h2 className="text-xl font-semibold">{desk.workTitle}</h2><p className="mt-1 text-sm text-muted-foreground">Accepted practice work and separate fictional reference records.</p></div><label className="relative block w-full sm:w-72"><span className="sr-only">Search work records</span><Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search references or status" className="min-h-11 w-full rounded-md border border-border bg-card pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" /></label></div>
       <div className="mt-6 grid min-w-0 gap-7 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="min-w-0"><div className="mb-3 flex items-baseline justify-between gap-3"><h3 className="font-semibold">Shared practice work</h3><span className="font-mono text-xs text-muted-foreground">{mine.length} shown</span></div>{mine.length ? <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{mine.map(item => <li key={item.itemKey}><button type="button" onClick={() => select({ kind: "practice", key: item.itemKey })} className="flex min-h-20 w-full items-center justify-between gap-3 p-4 text-left hover:bg-muted focus-visible:bg-muted focus-visible:outline-2 focus-visible:outline-ring"><span className="min-w-0"><span className="block font-semibold">{item.title}</span><span className="mt-1 block text-sm text-muted-foreground">{friendly(item.status)} · {item.itemKey}</span></span><ArrowRight size={18} className="shrink-0" aria-hidden="true" /></button></li>)}</ul> : <div className="rounded-xl border border-border bg-card p-5 text-sm leading-6 text-muted-foreground">{term ? "No shared work matches your search." : "No shared practice items for this desk yet."}</div>}</div>
@@ -126,19 +131,22 @@ function ActivityView({ spec, role, state, events, disabled, onAction, desk, sel
 }
 
 export function ScenarioWorkspace(props: ScenarioWorkspaceProps) {
-  const { spec, role, view, events, practiceItems, disabled, onPractice } = props;
+  const { spec, role, view, events, practiceItems, disabled, onPractice, onCreatePractice } = props;
   const [selection, setSelection] = useState<Selection>(null);
   const desk = spec.roles.find(item => item.id === role);
   const selectedItem = selection?.kind === "practice" ? practiceItems.find(item => item.itemKey === selection.key) : null;
   const selectedSample = selection?.kind === "sample" ? desk?.sampleRecords.find(item => item.reference === selection.key) : null;
   const selectedEvent = selection?.kind === "event" ? events.find(item => item.id === selection.key) : null;
   const selectedActions = useMemo(() => selectedItem ? practiceActions(selectedItem, role) : [], [selectedItem, role]);
+  const sampleTemplateIndex = selectedSample ? desk?.sampleRecords.findIndex(item => item.reference === selectedSample.reference) : -1;
+  const sampleTemplate = (sampleTemplateIndex === 1 || sampleTemplateIndex === 2) ? practiceTemplates(spec.id, role)[sampleTemplateIndex - 1] : null;
+  const createdCount = practiceItems.filter(item => item.itemKey.startsWith("LIVE-")).length;
   if (!desk) return <section role="status" className="rounded-xl border border-border bg-card p-6"><h1 className="text-xl font-semibold">Role unavailable</h1><p className="mt-2 text-sm text-muted-foreground">Choose an available role for this idea to open its workspace.</p></section>;
   return <div className="min-w-0 space-y-7 pb-24 sm:pb-8"><RoleHeader spec={spec} desk={desk} />
     {view === "overview" ? <Overview {...props} desk={desk} select={setSelection} /> : view === "work" ? <Work {...props} desk={desk} select={setSelection} /> : <ActivityView {...props} desk={desk} select={setSelection} />}
     <Sheet open={Boolean(selectedItem || selectedSample || selectedEvent)} onOpenChange={open => { if (!open) setSelection(null); }} title={selectedItem?.title ?? selectedSample?.title ?? selectedEvent?.label ?? "Details"}>
       {selectedItem && <div className="space-y-5"><p className="font-mono text-sm text-muted-foreground">{selectedItem.itemKey}</p><p className="text-base leading-7">{selectedItem.detail}</p><dl className="space-y-3 border-y border-border py-4 text-sm"><div className="flex justify-between gap-4"><dt>Status</dt><dd className="font-semibold">{friendly(selectedItem.status)}</dd></div><div className="flex justify-between gap-4"><dt>Owner</dt><dd className="text-right">{spec.roles.find(item => item.id === selectedItem.ownerRole)?.title ?? friendly(selectedItem.ownerRole)}</dd></div><div className="flex justify-between gap-4"><dt>Counterparty</dt><dd className="text-right">{spec.roles.find(item => item.id === selectedItem.counterpartyRole)?.title ?? friendly(selectedItem.counterpartyRole)}</dd></div></dl><p className="text-sm leading-6 text-muted-foreground">Practice coordination only. This item does not move cash, securities, or tax relief.</p>{selectedActions.length > 0 && <div className="flex flex-wrap gap-2">{selectedActions.map(action => <Button key={action} type="button" variant={action === "acknowledge" || action === "respond" || action === "resolve" ? "primary" : "secondary"} disabled={disabled} onClick={() => { onPractice(selectedItem.itemKey, action); setSelection(null); }}>{PRACTICE_LABEL[action]}</Button>)}</div>}</div>}
-      {selectedSample && <div className="space-y-5"><p className="font-mono text-sm text-muted-foreground">{selectedSample.reference}</p><p className="text-base leading-7">{selectedSample.detail}</p><p className="rounded-lg bg-secondary p-4 text-sm"><strong>Status:</strong> {selectedSample.status}</p><p className="text-sm leading-6 text-muted-foreground">Sample record only. It does not represent an accepted action in this run and does not appear in the shared workflow log.</p></div>}
+      {selectedSample && <div className="space-y-5"><p className="font-mono text-sm text-muted-foreground">{selectedSample.reference}</p><p className="text-base leading-7">{selectedSample.detail}</p><p className="rounded-lg bg-secondary p-4 text-sm"><strong>Status:</strong> {selectedSample.status}</p><p className="text-sm leading-6 text-muted-foreground">Sample record only. It does not represent an accepted action in this run and does not appear in the shared workflow log.</p>{sampleTemplate && <Button className="w-full" disabled={disabled || createdCount >= 20} onClick={() => { void onCreatePractice(sampleTemplate.id); setSelection(null); }}>Start related practice task <ArrowRight size={16} aria-hidden="true" /></Button>}</div>}
       {selectedEvent && <div className="space-y-5"><p className="text-base leading-7">{selectedEvent.label}</p><dl className="space-y-3 border-y border-border py-4 text-sm"><div className="flex justify-between gap-4"><dt>Recorded</dt><dd className="text-right">{eventTime(selectedEvent.createdAt)}</dd></div><div className="flex justify-between gap-4"><dt>Actor</dt><dd className="text-right font-semibold">{spec.roles.find(item => item.id === selectedEvent.actor)?.title ?? friendly(selectedEvent.actor)}</dd></div><div className="flex justify-between gap-4"><dt>Reference</dt><dd className="break-all text-right font-mono">{selectedEvent.reference ?? "—"}</dd></div></dl><p className="text-sm leading-6 text-muted-foreground">Accepted simulated workflow event. No real system was contacted.</p></div>}
     </Sheet>
   </div>;

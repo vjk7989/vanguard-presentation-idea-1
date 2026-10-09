@@ -19,8 +19,25 @@ export const IDEA1_ROLE_TITLES: Record<"issuer" | "fund" | "bank", string> = {
   bank: "Bank Payments Officer",
 };
 
+function withEightDeskRecords(spec: IdeaSpec): IdeaSpec {
+  return { ...spec, roles: spec.roles.map(role => {
+    const base = role.sampleRecords;
+    const extras = Array.from({ length: Math.max(0, 8 - base.length) }, (_, index) => {
+      const source = base[(index + 1) % base.length];
+      return { reference: `${source.reference}-F${index + 1}`, title: `${source.title} follow-up`,
+        detail: `${source.detail}. Fictional follow-up for the ${role.title} workbench.`,
+        status: index % 2 === 0 ? "Sample · awaiting review" : "Sample · context filed" };
+    });
+    return { ...role, sampleRecords: [...base, ...extras] };
+  }) };
+}
+
+const enriched: Record<2 | 3 | 4, IdeaSpec> = {
+  2: withEightDeskRecords(idea2), 3: withEightDeskRecords(idea3), 4: withEightDeskRecords(idea4),
+};
+
 export function getIdeaSpec(ideaKey: IdeaKey): IdeaSpec | null {
-  return ideaKey === 2 ? idea2 : ideaKey === 3 ? idea3 : ideaKey === 4 ? idea4 : null;
+  return ideaKey === 1 ? null : enriched[ideaKey];
 }
 
 export function roleTitle(ideaKey: IdeaKey, role: string): string {

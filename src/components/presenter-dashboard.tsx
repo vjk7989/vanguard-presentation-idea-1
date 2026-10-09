@@ -7,12 +7,13 @@ import { ArrowRight, Copy, ExternalLink, MoreHorizontal, Pause, Play, QrCode, Ro
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Architecture } from "@/components/architecture";
+import { ComparisonWorkbench } from "@/components/comparison-workbench";
 import { Disclaimer, ThemeToggle } from "@/components/common";
 import { formatMoney, type Role } from "@/lib/domain";
 import { nextCaseRole, type CasePreset, type DemoCase } from "@/lib/demo-cases";
 import type { Snapshot, WireEvent } from "@/lib/store";
 import { useRoom } from "@/hooks/use-room";
-import { IDEA_TITLES } from "@/lib/ideas";
+import { IDEA_TITLES, roleTitle } from "@/lib/ideas";
 import { ScenarioPresenter } from "@/components/ideas/scenario-presenter";
 
 const names: Partial<Record<Role, string>> = { issuer: "Issuer Treasury", fund: "Vanguard Fund Operations", bank: "Bank Payments" };
@@ -35,7 +36,7 @@ function InvitePanel({ snapshot: s, url, onCopy }: {
 function DeviceRoster({ snapshot: s, disabled, onKick }: { snapshot: Snapshot; disabled: boolean; onKick: (id: string) => void }) {
   return <section className="rounded-xl border border-border bg-card p-5" aria-label="Connected devices">
     <div className="flex flex-wrap items-end justify-between gap-2"><div><h2 className="text-lg font-semibold">Devices in this room</h2><p className="mt-1 text-sm text-muted-foreground">Presence refreshes every two seconds.</p></div><strong className="font-mono text-2xl">{s.presence.online} <span className="text-sm font-normal text-muted-foreground">online</span></strong></div>
-    <p className="mt-3 text-xs text-muted-foreground">{s.presence.admins} admins · {s.presence.waiting} choosing a role · {s.presence.assigned} in roles</p>
+    <p className="mt-3 text-xs text-muted-foreground">{s.roles.filter(role => role.claimed).length} roles claimed · {s.presence.participants} participants online · {s.presence.waiting} choosing · {s.presence.admins} admins online</p>
     <div className="mt-4 border-t border-border">{s.presence.devices.length ? s.presence.devices.map(device => <div key={device.id} className="flex min-w-0 items-center justify-between gap-3 border-b border-border py-3 text-sm"><div className="min-w-0"><span className="block truncate font-mono font-semibold">{device.label}</span><span className="text-xs text-muted-foreground">{device.role ? names[device.role] : "Choosing a role"} · {device.connected ? "Online" : "Offline"}</span></div><Button variant="ghost" size="sm" onClick={() => onKick(device.id)} disabled={disabled} aria-label={`Kick ${device.label}`}>Kick</Button></div>) : <p className="py-5 text-sm text-muted-foreground">No participant devices yet. Show the QR to invite them.</p>}</div>
   </section>;
 }
@@ -91,6 +92,7 @@ function EventFeed({ events, onSelect, code }: { events: WireEvent[]; onSelect: 
 export function PresenterDashboard({ code }: { code: string }) {
   const { snapshot: s, connected, busy, error, animatedEvent, post } = useRoom(code);
   const [selected, setSelected] = useState<WireEvent | null>(null);
+  const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [localJoinUrl, setLocalJoinUrl] = useState("");
   const [showQr, setShowQr] = useState(false);
   const [notice, setNotice] = useState("");
@@ -105,11 +107,12 @@ export function PresenterDashboard({ code }: { code: string }) {
   async function advance(item: DemoCase) { const role = nextCaseRole(item.status); if (!role) return; try { const result = await post<{ message?: string }>(`cases/${item.id}/actions`, { action: role === "fund" ? "fund_review" : "bank_acknowledge", onBehalfOf: role }); setNotice(result.message ?? "Practice case updated."); } catch {} }
 
   if (!s) return <div className="min-h-screen bg-background p-6 text-foreground"><div className="mx-auto max-w-6xl"><div className="h-10 w-64 animate-pulse rounded bg-muted" /><div className="mt-6 h-80 animate-pulse rounded-xl bg-muted" />{error && <p role="alert" className="mt-5 text-destructive">{error}</p>}</div></div>;
+  if (s.session.kind !== "presenter") return <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 px-5 text-foreground"><h1 className="text-2xl font-bold">This profile is a participant</h1><p className="text-muted-foreground">{s.session.role ? `This Chrome profile is already ${roleTitle(s.ideaKey, s.session.role)}.` : "This Chrome profile is choosing a role."} The admin dashboard requires a separate admin profile.</p><Link href={s.session.role ? `/room/${code}` : `/join/${code}`} className="inline-flex min-h-11 items-center font-semibold text-primary">{s.session.role ? "Open your dashboard" : "Choose a role"} <ArrowRight size={16} className="ml-2" /></Link></main>;
   if (s.ideaKey !== 1) return <ScenarioPresenter code={code} snapshot={s} connected={connected} busy={busy}
     error={error} animatedEvent={animatedEvent} post={post} />;
   return <div className="flex min-h-screen flex-col bg-background text-foreground"><a href="#presenter-main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-3">Skip to main content</a>
     <header className="border-b border-border bg-card"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8"><div className="flex items-center gap-5"><div className="text-sm font-bold tracking-tight">RESERVE <span className="text-primary">OPERATIONS</span> LAB</div><span className="hidden font-mono text-xs text-muted-foreground sm:inline">{s.code} · RUN {s.runNumber}</span></div><div className="flex items-center gap-3"><span className={`inline-flex items-center gap-1 text-xs ${connected ? "text-foreground" : "text-destructive"}`}>{connected ? <Wifi size={15} aria-hidden="true" /> : <WifiOff size={15} aria-hidden="true" />}{connected ? "Connected" : "Offline"}</span><ThemeToggle /></div></div></header>
-    <main id="presenter-main" className="mx-auto w-full max-w-[1440px] flex-1 space-y-5 px-4 py-5 sm:px-8">
+    <main id="presenter-main" className="mx-auto w-full max-w-[1440px] flex-1 space-y-3 px-4 py-3 sm:px-8">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-2 text-sm">
         <span className="font-semibold">Idea 1 of 4 · {IDEA_TITLES[1]}</span>
         <div className="flex items-center gap-2">
@@ -127,13 +130,14 @@ export function PresenterDashboard({ code }: { code: string }) {
       {error && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">{error}{!connected && " Actions are disabled until the connection returns."}</p>}
       {notice && <p role="status" className="rounded-lg bg-secondary p-3 text-sm">{notice}</p>}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 sm:px-5"><div className="flex flex-wrap items-center gap-3 text-sm font-semibold"><span className={s.mode === "conventional" ? "text-foreground" : "text-muted-foreground"}>Without blockchain</span><Switch.Root checked={s.mode === "ledger"} onCheckedChange={checked => control("set_mode", { mode: checked ? "ledger" : "conventional" })} disabled={disabled} aria-label="Show shared workflow ledger" className="relative h-7 w-12 rounded-full bg-secondary data-[state=checked]:bg-primary"><Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" /></Switch.Root><span className={s.mode === "ledger" ? "text-foreground" : "text-muted-foreground"}>With blockchain</span></div><p className="text-xs text-muted-foreground">Same actions and balances. Different record-sharing view.</p></div>
+      <ComparisonWorkbench snapshot={s} selectedEventId={comparisonId} onSelect={setComparisonId} animatedEvent={animatedEvent} />
       <div className={showQr ? "grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(280px,.34fr)]" : ""}>
-        <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card" aria-label="Live workflow diagram"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-4"><div><h2 className="text-lg font-semibold">Live workflow</h2><p className="mt-1 text-xs text-muted-foreground">Accepted device actions appear here. Refresh never replays old animation.</p></div><span className="font-mono text-xs text-muted-foreground">{s.presence.assigned}/3 roles assigned</span></div><Architecture snapshot={s} animatedEvent={animatedEvent} /></section>
+        <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card" aria-label="Live workflow diagram"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-4"><div><h2 className="text-lg font-semibold">Live workflow</h2><p className="mt-1 text-xs text-muted-foreground">Accepted device actions appear here. Refresh never replays old animation.</p></div><span className="font-mono text-xs text-muted-foreground">{s.roles.filter(role => role.claimed).length}/3 roles claimed · {s.presence.participants} participants online</span></div><Architecture snapshot={s} animatedEvent={animatedEvent} /></section>
         {showQr && <InvitePanel snapshot={s} url={joinUrl} onCopy={copyJoin} />}
       </div>
       <BalanceStrip snapshot={s} />
       <div className="grid gap-5 lg:grid-cols-2"><FridayPanel snapshot={s} disabled={disabled} onTakeover={takeover} onControl={name => control(name)} /><PracticePanel snapshot={s} disabled={disabled} onCreate={createCase} onAdvance={advance} /></div>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,.8fr)]"><EventFeed events={s.events} onSelect={setSelected} code={code} /><DeviceRoster snapshot={s} disabled={disabled} onKick={kick} /></div>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,.8fr)]"><EventFeed events={s.events} onSelect={event => { setComparisonId(event.id); setSelected(event); }} code={code} /><DeviceRoster snapshot={s} disabled={disabled} onKick={kick} /></div>
     </main>
     <Sheet open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)} title="Event detail">{selected && <div className="space-y-5 text-sm"><p className="text-base leading-7">{selected.label}</p><dl className="grid grid-cols-[7rem_1fr] gap-y-3 border-y border-border py-5"><dt className="text-muted-foreground">Actor</dt><dd className="capitalize">{selected.actor}{selected.onBehalfOf ? ` on behalf of ${selected.onBehalfOf}` : ""}</dd><dt className="text-muted-foreground">Time</dt><dd>{new Date(selected.createdAt).toLocaleString()}</dd><dt className="text-muted-foreground">Amount</dt><dd>{selected.amount ? formatMoney(selected.amount) : "No cash movement"}</dd></dl><details className="rounded-md border border-border p-4"><summary className="cursor-pointer font-semibold">Technical identifiers</summary><dl className="mt-4 space-y-3 break-all font-mono text-xs"><div><dt className="text-muted-foreground">Practice or scenario reference</dt><dd>{selected.reference ?? "None"}</dd></div><div><dt className="text-muted-foreground">Event index</dt><dd>{selected.index}</dd></div><div><dt className="text-muted-foreground">Previous hash</dt><dd>{selected.previousHash}</dd></div><div><dt className="text-muted-foreground">Event hash</dt><dd>{selected.hash}</dd></div></dl></details></div>}</Sheet>
     <Disclaimer />
